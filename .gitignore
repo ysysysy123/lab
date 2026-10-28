@@ -1,0 +1,43 @@
+# Python & Virtual Envs
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Model Weights, Datasets & Checkpoints (切勿提交大权重到 Git)
+*.pt
+*.pth
+*.safetensors
+*.bin
+*.gguf
+*.onnx
+checkpoints/
+outputs/
+out/
+data/
+datasets/
+wandb/
+runs/
+tensorboard/
+logs/
+*.log
+
+# External Cloned Repos (在 projects/*/external/ 下单独拉取参考源码)
+projects/*/external/
+
+# Secrets & Local Configs
+.env
+*.local.sh
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
