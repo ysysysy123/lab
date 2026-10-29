@@ -403,6 +403,9 @@ def cmd_brief(_args: argparse.Namespace) -> None:
 
 
 def main() -> None:
+    # Windows 控制台默认 GBK，print 中文/emoji 会 UnicodeEncodeError
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="AI Lab 本地学习流 CLI 助手")
     sub = parser.add_subparsers(dest="cmd", required=True)
 

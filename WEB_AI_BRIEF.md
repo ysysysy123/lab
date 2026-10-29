@@ -1,7 +1,7 @@
 # 🤝 WEB_AI_BRIEF — 网页端 AI / 跨设备实时学习交接单
 
 > **用法**：在平板/手机/网页版 ChatGPT、Claude、Gemini、DeepSeek 新开对话时，直接关联本仓库或把本文件全文粘贴给它，即可 3 秒恢复你的全部学习上下文！  
-> *最后自动刷新日期：2026-10-28（由 `python3 study.py brief` 生成）*
+> *最后自动刷新日期：2026-10-29（由 `python3 study.py brief` 生成）*
 
 ---
 
@@ -17,21 +17,20 @@
 
 ## 2. 我当前的实时进度快照
 
-- **16 周主线完成度**：`0 / 61`
+- **16 周主线完成度**：`4 / 61`
 - **30 篇精选论文**：`0 / 30`
 - **Hot100 手撕题**：`0 / 51`
-- **最近一次打卡文件**：`daily/暂无打卡日志`
+- **最近一次打卡文件**：`daily/2026-10-28.md`
 
 ### 📍 当前正在攻坚的周次：W01 · 环境点火与神经元直觉
-- [ ] **[环境]** 运行 `bash env/setup_local_conda.sh` 配好 `ai-lab` 环境，并通过 `python env/check_gpu.py`
-- [ ] **[环境]** 提交远程 80GB A800 算力申请，配好免密 SSH 与 WandB 账号
-- [ ] **[原理]** 看完 3Blue1Brown《神经网络》第 1–4 集 + PyTorch 60min Blitz
-- [ ] **[盲写]** 阅读并独立默写一遍 `concepts/w01_micro_autograd.py`（理解标量链式法则）
 - [ ] **[项目 P1]** 用 NumPy 与 PyTorch 分别实现逻辑回归/MLP 跑通 MNIST（准确率 ≥ 97%）
 - [ ] **[论文]** 精读方法论 *How to Read a Paper* (Keshav)
 
 ### ✅ 最近已掌握/已勾选的任务（模拟面试拷问范围）
-- 刚刚起步（0 基础破冰阶段）
+- [x] **[环境]** 运行 `bash env/setup_local_conda.sh` 配好 `test` 环境，并通过 `python env/check_gpu.py`
+- [x] **[环境]** 提交远程 80GB A800 算力申请，配好免密 SSH 与 WandB 账号
+- [x] **[原理]** 看完 3Blue1Brown《神经网络》第 1–4 集 + PyTorch 60min Blitz
+- [x] **[盲写]** 阅读并独立默写一遍 `concepts/w01_micro_autograd.py`（理解标量链式法则）
 
 ---
 
