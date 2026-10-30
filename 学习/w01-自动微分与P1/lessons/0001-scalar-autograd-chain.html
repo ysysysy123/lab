@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>标量计算图与 Value.backward() 三条铁律 · w01-自动微分与P1</title>
+<meta name="lab:topic" content="w01-自动微分与P1">
+<meta name="lab:num" content="1">
+<meta name="lab:step" content="1">
+<meta name="lab:date" content="2026-10-30">
+<link rel="stylesheet" href="../../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body>
+<div class="lab-layout">
+  <nav id="lab-toc" aria-label="目录"></nav>
+
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../../index.html">📚 学习地图</a> / <a href="../../index.html#w01-自动微分与P1">w01-自动微分与P1</a> / 第 1 课</div>
+      <h1>标量计算图与 <code>Value.backward()</code> 三条铁律</h1>
+      <p class="subtitle">为什么短短 70 行 Python 就能撑起整个现代深度学习的自动求导引擎？</p>
+      <div class="chips">
+        <span class="chip">⏱ 约 18 分钟</span>
+        <span class="chip">🧭 计划步骤 1 / 5</span>
+        <span class="chip">💻 concepts/w01_micro_autograd.py</span>
+        <span class="chip">📓 03-深度学习/01-多层感知机与反向传播.ipynb</span>
+      </div>
+    </header>
+
+    <div class="win">
+      <div class="icon">🎯</div>
+      <div>
+        <h4>本课收获</h4>
+        <p>看着任意标量表达式画出计算图，手算出前向值与反向偏导（精确到小数点后 4 位），并彻底讲清 <code>backward()</code> 里<strong>「起点置 1 · 支路 <code>+=</code> 累加 · DFS 逆拓扑序」</strong>三条铁律缺哪一条会怎样算错。</p>
+      </div>
+    </div>
+
+    <div class="prereq">
+      <b>前置依赖：</b>
+      <span class="known">✓ 一元导数与复合函数链式法则（已在 <code>w01_my_autograd.py</code> 验证通过）</span> ·
+      <span class="gap">△ 有向无环图（DAG）拓扑排序（本课 §3 用一个 4 节点例子直接看懂）</span>
+    </div>
+
+    <!-- ========== §1 痛点与直觉 ========== -->
+    <section>
+      <h2><span class="num">01</span>痛点与直觉：为什么不能直接套求导公式？</h2>
+      <p>如果模型只有 2 个参数，你可以用纸笔把损失函数 $L(w, b)$ 展开成一大串初等函数再硬求偏导；但当网络堆到 32 层 Transformer（几十亿参数、带分支残差与循环）时，<strong>手动展开总表达式会发生指数级项数爆炸</strong>。</p>
+      <aside class="sidenote">
+        <b>前向模式 vs 反向模式</b>（对应 AI Tutorial 笔记 §6.5）：若输入参数有 $N$ 个而损失 $L$ 是 1 个标量，前向求导每跑 1 趟只能算出对 1 个参数的导数（共需 $N$ 趟）；<strong>反向模式从标量 $L$ 出发往回走，只需 1 趟就能拿齐全部 $N$ 个参数的梯度！</strong>这正是 PyTorch <code>loss.backward()</code> 高效的根本原因。
+      </aside>
+      <p>自动微分（Autograd）的破局思路只有一句话：<strong>永远不要展开全局公式，把复杂函数拆成加、乘、激活等原子节点，每个节点只管自己门前这一步的局部斜率。</strong></p>
+
+      <div class="callout intuition">
+        <span class="ct">多米诺骨牌 vs 错误账单分摊（取自 01-MLP 笔记导言）</span>
+        <p><strong>前向传播像推多米诺骨牌</strong>：输入 $x$ 与权重 $w$ 一张接一张触发后续节点，算出中间结果 <code>data</code> 并顺手记下「我是谁算出来的」（<code>_prev</code>）。<br>
+        <strong>反向传播像按责任分摊账单</strong>：终点算出总误差后，每个节点只接收下游传来的「上游梯度」<code>out.grad</code>，乘上自己的「局部导数」，把责任继续分给自己的输入节点。</p>
+      </div>
+    </section>
+
+    <!-- ========== §2 具体数字手算 + 逐步图动画 ========== -->
+    <section>
+      <h2><span class="num">02</span>具体数字走一遍：单神经元的 5 步前反向</h2>
+      <p>直接取 <code>concepts/w01_micro_autograd.py</code> 第 98–103 行的真实测试数字：$x = 0.7,\ w = -1.3,\ b = 0.2$，经过线性加权与 $\tanh$ 激活得到输出 $y = \tanh(wx + b)$。点击下方「下一步」（或按键盘 <kbd>←</kbd> <kbd>→</kbd>）观察数值与梯度如何在图上流动：</p>
+
+      <div class="lab-figure">
+        <div id="graph-neuron"></div>
+        <figcaption>计算图实时状态：上方为节点名与前向值 <code>data</code>，下方为累积反向梯度 <code>grad = ∂y/∂v</code>。</figcaption>
+      </div>
+
+      <div class="lab-stepper" id="step-neuron" data-title="单神经元 y = tanh(w·x + b) 前向与反向全追踪">
+        <div class="step" data-title="前向计算（从左往右求 data）">
+          <p>依次执行三次原子运算，生成计算图并缓存前向数值：</p>
+          <p>$$u = w \cdot x = (-1.3) \times 0.7 = -0.91$$</p>
+          <p>$$z = u + b = -0.91 + 0.2 = -0.71$$</p>
+          <p>$$y = \tanh(z) = \tanh(-0.71) \approx -0.610677$$</p>
+          <p class="small muted">此时所有节点的 <code>grad</code> 都是初始值 <code>0.0</code>。</p>
+        </div>
+        <div class="step" data-title="反向起点：终点自导数置 1">
+          <p>调用 <code>y.backward()</code>，第一步先把终点自身的梯度设为 $1$：</p>
+          <p>$$\frac{\partial y}{\partial y} = 1.0 \quad \Longrightarrow \quad \text{y.grad} = 1.0$$</p>
+        </div>
+        <div class="step" data-title="穿过 tanh 门（乘局部导数 1 - y²）">
+          <p>因为 $\frac{\mathrm{d}}{\mathrm{d}z}\tanh(z) = 1 - \tanh^2(z) = 1 - y^2$（注意直接复用了前向缓存的 $y$！）：</p>
+          <p>$$\text{z.grad} \mathrel{+}= (1 - (-0.610677)^2) \times \underbrace{1.0}_{\text{y.grad}} = 0.627074$$</p>
+        </div>
+        <div class="step" data-title="穿过加法门 +（梯度原样分发）">
+          <p>对 $z = u + b$，局部导数 $\frac{\partial z}{\partial u} = 1,\ \frac{\partial z}{\partial b} = 1$。<strong>加法门就像「梯度路由器」</strong>，把上游梯度原封不动发给两个输入：</p>
+          <p>$$\text{u.grad} \mathrel{+}= 1 \times 0.627074 = 0.627074, \qquad \text{b.grad} \mathrel{+}= 1 \times 0.627074 = 0.627074$$</p>
+        </div>
+        <div class="step" data-title="穿过乘法门 ×（互换搭档的值）">
+          <p>对 $u = w \cdot x$，局部导数 $\frac{\partial u}{\partial w} = x,\ \frac{\partial u}{\partial x} = w$。<strong>乘法门把「对方的前向值」乘上上游梯度</strong>：</p>
+          <p>$$\text{w.grad} \mathrel{+}= x \cdot \text{u.grad} = 0.7 \times 0.627074 = \mathbf{0.438952}$$</p>
+          <p>$$\text{x.grad} \mathrel{+}= w \cdot \text{u.grad} = (-1.3) \times 0.627074 = \mathbf{-0.815196}$$</p>
+          <p class="small muted">含义：$w$ 若微增 $+0.001$，输出 $y$ 会约增大 $+0.000439$。</p>
+        </div>
+      </div>
+
+      <div class="eq-explain">
+        <span class="eq-tag">单步回传通式</span>
+        <p>$$\text{child.grad} \;\mathrel{+}=\; \underbrace{\frac{\partial\,\text{out}}{\partial\,\text{child}}}_{\text{局部导数}} \;\times\; \underbrace{\text{out.grad}}_{\text{上游梯度 } \partial L / \partial\,\text{out}}$$</p>
+        <dl>
+          <dt>加法 $a + b$</dt><dd>局部导数均为 $1$ → 上游梯度原样复制给两侧（残差连接 $F(x)+x$ 能当「梯度高速公路」正是靠它！）</dd>
+          <dt>乘法 $a \cdot b$</dt><dd>对 $a$ 的局部导数是 $b$，对 $b$ 的局部导数是 $a$ → 所以前向必须存下输入值（大模型激活显存的大头来源）</dd>
+          <dt>激活 $\sigma(z)$</dt><dd>$\tanh'(z) = 1 - y^2$，$\text{ReLU}'(z) = \mathbb{1}[z > 0]$，$\exp'(z) = e^z = \text{out.data}$</dd>
+        </dl>
+      </div>
+    </section>
+
+    <!-- ========== §3 三条铁律 ========== -->
+    <section>
+      <h2><span class="num">03</span>深挖原理：<code>backward()</code> 缺一不可的三条铁律</h2>
+      <p>回看你写过的 <code>Value.backward()</code>，真正控制全局调度的其实只有短短十几行，浓缩成三条铁律。任何一条写错，在简单链式图上可能侥幸蒙混过关，一遇到真实网络就会静默算出错误梯度：</p>
+
+      <h3>铁律一：终点启动 <code>self.grad = 1.0</code></h3>
+      <p>反向传播全部是乘法链 $\text{local\_grad} \times \text{out.grad}$。所有节点的 <code>grad</code> 初始化为 <code>0.0</code>；如果不把根节点 <code>self.grad</code> 置为 $1.0$（对应微积分恒等式 $\frac{\partial L}{\partial L} = 1$），整张图回传完永远全为 $0$。</p>
+
+      <h3>铁律二：多支路汇聚必须用 <code>+=</code>，绝不能用 <code>=</code></h3>
+      <p>当同一个变量参与多次运算时——比如权重共享、RNN 时间步展开、或者你在 <code>w01_my_autograd.py</code> 测试过的 $y_1 = a \cdot a + a$（当 $a = 3$）——多元微积分全导数公式要求<strong>把所有路径传回来的偏导相加</strong>：</p>
+      <p>$$\frac{\mathrm{d}y_1}{\mathrm{d}a} = \underbrace{a}_{\text{乘号左路 } 3} + \underbrace{a}_{\text{乘号右路 } 3} + \underbrace{1}_{\text{加号支路 } 1} = 2a + 1 = 7$$</p>
+      <div class="callout warn">
+        <span class="ct">如果误写成 <code>self.grad = ...</code> 会发生什么？</span>
+        <p>在 <code>u = a * a</code> 的 <code>_backward</code> 中，第二行 <code>other.grad = self.data * out.grad</code> 会把第一行刚算好的梯度覆盖掉；若再经过外层加法门，最后执行的支路会直接把 <code>a.grad</code> 覆盖成 <code>1.0</code> 或 <code>3.0</code>，彻底丢掉其余支路！（这也解释了为什么 PyTorch 每轮训练必须显式调 <code>optimizer.zero_grad()</code>——因为底层默认一直在做 <code>+=</code> 累加！）</p>
+      </div>
+
+      <h3>铁律三：必须按「DFS 后序反转（逆拓扑序）」依次回传</h3>
+      <p>为什么不能随便按字典或队列顺序调用 <code>_backward()</code>？看下面这个极简 4 节点菱形图（取 $a = 2$）：</p>
+      <p>$$b = a + 1 = 3, \qquad c = 2b = 6, \qquad L = b + c = 9$$</p>
+      <p>显然 $L = 3(a + 1)$，因此真实梯度是 $\frac{\partial L}{\partial b} = 3,\ \frac{\partial L}{\partial a} = 3$。观察下方两种回传顺序的差异：</p>
+
+      <div class="lab-tabs">
+        <div class="tab" data-label="✅ 正确：逆拓扑序 L → c → b → a">
+          <div class="callout lab">
+            <span class="ct">等所有下游支路都到齐后，才轮到 b 发言</span>
+            <ol>
+              <li><code>L._backward()</code>：先给 <code>b.grad += 1</code>（当前为 1），给 <code>c.grad += 1</code>（当前为 1）。</li>
+              <li><code>c._backward()</code>：把 $c=2b$ 的支路传回给 $b$，<code>b.grad += 2 * 1</code> → <strong>此时 <code>b.grad</code> 完整汇总为 $3.0$！</strong></li>
+              <li><code>b._backward()</code>：最后把完整的 <code>b.grad = 3.0</code> 传给 $a$ → <code>a.grad = 3.0</code>（完全正确）。</li>
+            </ol>
+          </div>
+        </div>
+        <div class="tab" data-label="❌ 错误：过早执行 b（L → b → c → a）">
+          <div class="callout warn">
+            <span class="ct">半截梯度提前出发，上游补发的梯度永远停在半路</span>
+            <ol>
+              <li><code>L._backward()</code>：<code>b.grad = 1</code>，<code>c.grad = 1</code>。</li>
+              <li><strong>过早执行 <code>b._backward()</code></strong>：此时 <code>c</code> 还没回传！<code>b</code> 拿着残缺的 <code>b.grad = 1</code> 传给 <code>a</code>，导致 <code>a.grad = 1.0</code>。</li>
+              <li><code>c._backward()</code>：虽然事后把 <code>b.grad</code> 补到了 $3.0$，但 <code>b._backward()</code> 已经执行过且不会重跑，<strong><code>a.grad</code> 永远错停在 $1.0$！</strong></li>
+            </ol>
+          </div>
+        </div>
+      </div>
+
+      <details class="reveal deep">
+        <summary>选读：DFS 后序遍历为什么恰好给出拓扑序？</summary>
+        <div>
+          <p>在 <code>build_topo(v)</code> 中，我们先把 <code>v</code> 标记进 <code>visited</code>（防菱形图重复入队），递归访问完所有前驱输入 <code>child in v._prev</code> 后，<strong>最后才执行 <code>topo.append(v)</code></strong>。</p>
+          <p>这意味着：任何一个输入节点一定比依赖它的输出节点更早进入 <code>topo</code> 列表（即 <code>topo</code> 是合法的前向计算序 <code>[a, b, c, L]</code>）。把它 <code>reversed(topo)</code> 倒过来得到 <code>[L, c, b, a]</code>，就严格保证了：<strong>轮到任意节点 <code>v</code> 执行 <code>_backward()</code> 时，所有用到了 <code>v</code> 的下游节点必定全都执行完毕了！</strong></p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §4 真实源码逐段拆解 ========== -->
+    <section>
+      <h2><span class="num">04</span>代码讲解：逐段拆解 <code>w01_micro_autograd.py</code></h2>
+      <p>下面左侧直接截取本仓 <code>concepts/w01_micro_autograd.py</code> 第 18–94 行真实源码；点击右侧任意编号卡片，左侧会自动高亮并定位对应代码行：</p>
+
+      <div class="code-walk" data-dim>
+<pre data-file="concepts/w01_micro_autograd.py" data-start="18" data-href="../../../concepts/w01_micro_autograd.py"><code class="language-python">class Value:
+    """标量计算图节点：记录前向数值 data、反向梯度 grad 以及拓扑父节点"""
+
+    def __init__(self, data: float, _children: tuple[Value, ...] = ()) -&gt; None:
+        self.data = float(data)
+        self.grad = 0.0
+        self._backward = lambda: None
+        self._prev = set(_children)
+
+    def __add__(self, other: Value | float) -&gt; Value:
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data + other.data, (self, other))
+
+        def _backward() -&gt; None:
+            self.grad += 1.0 * out.grad
+            other.grad += 1.0 * out.grad
+
+        out._backward = _backward
+        return out
+
+    def __mul__(self, other: Value | float) -&gt; Value:
+        other = other if isinstance(other, Value) else Value(other)
+        out = Value(self.data * other.data, (self, other))
+
+        def _backward() -&gt; None:
+            self.grad += other.data * out.grad
+            other.grad += self.data * out.grad
+
+        out._backward = _backward
+        return out
+
+    def __pow__(self, power: float) -&gt; Value:
+        out = Value(self.data**power, (self,))
+
+        def _backward() -&gt; None:
+            self.grad += (power * (self.data ** (power - 1))) * out.grad
+
+        out._backward = _backward
+        return out
+
+    def tanh(self) -&gt; Value:
+        t = math.tanh(self.data)
+        out = Value(t, (self,))
+
+        def _backward() -&gt; None:
+            self.grad += (1.0 - t * t) * out.grad
+
+        out._backward = _backward
+        return out
+
+    def __neg__(self) -&gt; Value:
+        return self * -1.0
+
+    def __sub__(self, other: Value | float) -&gt; Value:
+        return self + (-other)
+
+    def __radd__(self, other: float) -&gt; Value:
+        return self + other
+
+    def __rmul__(self, other: float) -&gt; Value:
+        return self * other
+
+    def backward(self) -&gt; None:
+        topo: list[Value] = []
+        visited: set[Value] = set()
+
+        def build_topo(v: Value) -&gt; None:
+            if v not in visited:
+                visited.add(v)
+                for child in v._prev:
+                    build_topo(child)
+                topo.append(v)
+
+        build_topo(self)
+        self.grad = 1.0
+        for node in reversed(topo):
+            node._backward()</code></pre>
+        <ol class="walk">
+          <li data-lines="21-25"><strong>节点四件套</strong>：<code>data</code> 存前向标量，<code>grad</code> 初始置 <code>0.0</code>，<code>_prev</code> 存直接输入节点集合（建图），叶子节点的 <code>_backward</code> 默认是空函数。</li>
+          <li data-lines="27-36"><strong>加法算子与常量包装</strong>：第 28 行先把 <code>x + 1.0</code> 里的裸 <code>float</code> 自动提升为 <code>Value</code>；闭包 <code>_backward</code> 用 <code>+=</code> 把 <code>out.grad</code> 等额累加给两侧。</li>
+          <li data-lines="38-47"><strong>乘法算子</strong>：闭包直接捕获前向时的 <code>self</code>、<code>other</code> 与 <code>out</code>，反向时交叉乘对方的前向数值 <code>other.data * out.grad</code>。</li>
+          <li data-lines="58-66"><strong>tanh 激活与前向值复用</strong>：局部导数写成 <code>1.0 - t * t</code> 而不再算一次 $\cosh(z)$，工业级算子（Sigmoid / Softmax / Tanh）都会尽量复用前向输出省算力。</li>
+          <li data-lines="68-78"><strong>算子组合复用</strong>：减法 <code>a - b</code> 直接拆成 <code>a + (-1.0 * b)</code>，无需额外手写减法反向逻辑；<code>__radd__</code> / <code>__rmul__</code> 支持 <code>2.0 * a</code> 左乘常数。</li>
+          <li data-lines="80-94"><strong>反向引擎总调度</strong>：DFS 后序生成拓扑序 → <code>self.grad = 1.0</code> 点火 → <code>reversed(topo)</code> 逆序逐节点触发局部回传闭包。</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ========== §5 交互实验 ========== -->
+    <section>
+      <h2 id="sec-pg"><span class="num">05</span>交互实验：亲手拖动权重看激活饱和与梯度检验</h2>
+      <p>下面把单神经元 $y = \sigma(wx + b)$ 变成实时实验台。默认参数正是代码里的 $(w{=}{-1.3},\ x{=}0.7,\ b{=}0.2)$，并同步计算中心差分数值梯度 $g_{\text{num}} = \frac{f(w+\epsilon)-f(w-\epsilon)}{2\epsilon}$ 进行校验：</p>
+
+      <div id="pg-neuron"></div>
+
+      <p class="small muted">💡 <strong>两个必试实验</strong>：① 把 $|w|$ 拉到 <code>3.0</code>、$x$ 拉到 <code>2.0</code>（使 $|z| &gt; 4$），观察 <code>tanh</code> / <code>sigmoid</code> 曲线变平，局部导数虚线跌近 <code>0</code>——这就是<strong>激活饱和导致梯度消失</strong>的直观现场！② 切到 <code>ReLU</code> 并把 $w$ 拖成负值使 $z &lt; 0$，观察梯度瞬间归零（Dead ReLU）。</p>
+    </section>
+
+    <!-- ========== §6 小结 ========== -->
+    <section>
+      <h2><span class="num">06</span>小结</h2>
+      <div class="callout summary">
+        <span class="ct">本课浓缩四句话</span>
+        <ul>
+          <li><strong>局部化拆解</strong>：反向传播不需要展开全局表达式，每个算子只需实现 $\text{child.grad} \mathrel{+}= \text{local\_grad} \times \text{out.grad}$。</li>
+          <li><strong>铁律 1（起点）</strong>：根节点先设 <code>self.grad = 1.0</code>（$\partial L/\partial L = 1$）。</li>
+          <li><strong>铁律 2（多分支）</strong>：必须用 <code>+=</code> 累加各支路偏导（因此训练循环每步前必须 <code>zero_grad()</code>）。</li>
+          <li><strong>铁律 3（顺序）</strong>：必须用 <code>visited</code> 去重的 DFS 后序反转（逆拓扑序），确保下游梯度全到齐后再往上游传。</li>
+        </ul>
+      </div>
+      <div class="callout interview">
+        <span class="ct">30 秒面试表达模板</span>
+        <p>「PyTorch 的 <code>loss.backward()</code> 本质是在动态有向无环计算图上做反向模式自动微分：因为训练损失是标量，反向走一趟就能算出对所有参数的偏导，复杂度与一次前向同阶。手写实现时核心就抓三点：终点梯度置 1、DFS 逆拓扑序保证上游梯度先汇齐、以及用 <code>+=</code> 处理变量多路复用——这也决定了工程上每次迭代前必须调 <code>optimizer.zero_grad()</code> 清零历史累积梯度。」</p>
+      </div>
+    </section>
+
+    <!-- ========== §7 可选自测 ========== -->
+    <section>
+      <h2><span class="num">07</span>想检验一下？（可选 · 点击展开）</h2>
+      <details class="reveal q">
+        <summary>1. 若计算表达式 $y = a \cdot a + a$（取 $a = 3$），把 <code>__mul__</code> 和 <code>__add__</code> 里的 <code>+=</code> 全改成 <code>=</code>，<code>a.grad</code> 会变成多少？</summary>
+        <div>
+          <p>设 $u = a \cdot a$，$y = u + a$。逆拓扑序先跑 $y$ 的加法回传：<code>u.grad = 1</code> 且 <code>a.grad = 1</code>；接着跑 $u = a \cdot a$ 的乘法回传：<code>self.grad = 3 * 1 = 3</code>，紧接着同一对象 <code>other.grad = 3 * 1 = 3</code> 再次覆盖。最终 <code>a.grad</code> 会算出错误的 <strong><code>3.0</code></strong>（若拓扑序先跑乘法再跑加法更会被覆盖成 <code>1.0</code>），而正确全导数是 $2a + 1 = \mathbf{7.0}$。</p>
+        </div>
+      </details>
+      <details class="reveal q">
+        <summary>2. 🎤 面试追问：为什么训练 7B 大模型时，参数本身只占 14GB（BF16），前向激活（Activations）却会把显存撑爆？跟今天的 <code>Value.__mul__</code> 有什么关系？</summary>
+        <div>
+          <p>看第 43–44 行：乘法门 $u = w \cdot x$ 求 $\partial L/\partial w = x \cdot \text{u.grad}$ 时，<strong>必须用到前向时的输入激活值 $x$</strong>；同理 $\tanh$、Softmax、矩阵乘 `A1.T @ dZ2` 全都依赖前向中间张量。如果不做重计算（Activation Checkpointing），所有层的中间激活都得驻留在显存里等反向传播用完才能释放，序列一长就会占满显存。</p>
+        </div>
+      </details>
+      <details class="reveal q">
+        <summary>3. 🎤 面试追问：做梯度检验为什么推荐中心差分 $\frac{f(w+\epsilon)-f(w-\epsilon)}{2\epsilon}$ 而不是单侧差分 $\frac{f(w+\epsilon)-f(w)}{\epsilon}$？</summary>
+        <div>
+          <p>泰勒展开中，中心差分的偶次项 $f''(w)\epsilon^2/2$ 正负相消，截断误差是 $O(\epsilon^2)$（取 $\epsilon=10^{-6}$ 时截断误差达 $10^{-12}$ 量级）；单侧差分误差只有 $O(\epsilon) \approx 10^{-6}$，在曲率较大的函数处很容易出现假阳性报警。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §8 延伸阅读 ========== -->
+    <section>
+      <h2><span class="num">08</span>延伸阅读与对照源码</h2>
+      <div class="callout source">
+        <span class="ct">首选资料</span>
+        <p>1. 本仓已通关脚本：<a href="../../../concepts/w01_micro_autograd.py"><code>concepts/w01_micro_autograd.py</code></a> 与你的盲写实现 <a href="../../../concepts/w01_my_autograd.py"><code>concepts/w01_my_autograd.py</code></a>（配套速查卡：<a href="../../reference/scalar-autograd-cheatsheet.html">标量自动微分速查卡</a>）。<br>
+        2. 视频一手源：Andrej Karpathy <em>The spelled-out intro to neural networks and backpropagation: building micrograd</em>（前 45 分钟，对照今天的三条铁律倍速回顾体验极佳）。</p>
+      </div>
+    </section>
+
+    <!-- LAB:NAV -->
+    <nav class="lab-nav"><a class="next" href="../../index.html#w01-自动微分与P1"><small>本课题最新一课</small>回到学习地图 · 说「继续」生成下一课</a></nav>
+    <!-- /LAB:NAV -->
+
+    <div class="ask-ai">💬 哪里想再掰开揉碎聊？直接说：<code>继续</code>（进入第 2 课：Softmax + 交叉熵灵魂梯度 $p - y$）· <code>详细推导</code> · <code>讲解代码</code> · <code>可视化</code> · <code>整理笔记</code></div>
+    <footer class="lab-footer">生成于 2026-10-30 · lab-teach · 数值来自 Python 金标准（w01_micro_autograd + PyTorch 双重校验）</footer>
+  </main>
+
+  <aside class="lab-margin"></aside>
+</div>
+
+<!-- LAB:GOLDEN -->
+<script type="application/json" id="lab-golden">{"neuron_u": -0.91, "neuron_z": -0.71, "neuron_y": -0.61067683, "neuron_dz": 0.62707381, "neuron_dw": 0.43895166, "neuron_dx": -0.81519595, "neuron_db": 0.62707381, "neuron_num_dw": 0.43895166, "reuse_y": 12.0, "reuse_da": 7.0, "topo_L": 9.0, "topo_db": 3.0, "topo_da_correct": 3.0, "topo_da_wrong_order": 1.0, "_meta": {"script": "学习/w01-自动微分与P1/verify_0001.py", "python": "test", "generated": "2026-10-30"}}</script>
+<!-- /LAB:GOLDEN -->
+
+<script src="../../../.agents/skills/lab-teach/assets/lab.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-math.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-plot.js"></script>
+<script>
+Lab.ready(() => {
+  // 1. 单神经元计算图逐步演示（与 #step-neuron 同步）
+  const wx = -1.3 * 0.7;
+  const z0 = wx + 0.2;
+  const y0 = Math.tanh(z0);
+  const dz0 = 1 - y0 * y0;
+  const dw0 = dz0 * 0.7;
+  const dx0 = dz0 * -1.3;
+
+  // 与 Python 金标准逐项对齐校验
+  Lab.check("neuron_u", wx);
+  Lab.check("neuron_z", z0);
+  Lab.check("neuron_y", y0, undefined, { tol: 1e-7 });
+  Lab.check("neuron_dz", dz0, undefined, { tol: 1e-7 });
+  Lab.check("neuron_dw", dw0, undefined, { tol: 1e-7, badge: "#sec-pg" });
+  Lab.check("neuron_dx", dx0, undefined, { tol: 1e-7 });
+  Lab.check("neuron_db", dz0, undefined, { tol: 1e-7 });
+  Lab.check("reuse_da", 2 * 3.0 + 1.0);
+  Lab.check("topo_da_correct", 1.0 + 2.0 * 1.0);
+
+  const g = LabPlot.graph("#graph-neuron", {
+    width: 680,
+    height: 220,
+    nodes: [
+      { id: "w", label: "w = -1.30", sub: "grad = 0", x: 64,  y: 54,  w: 102, h: 46 },
+      { id: "x", label: "x = 0.70",  sub: "grad = 0", x: 64,  y: 162, w: 102, h: 46 },
+      { id: "u", label: "u = w·x",   sub: "grad = 0", x: 228, y: 108, w: 112, h: 48 },
+      { id: "b", label: "b = 0.20",  sub: "grad = 0", x: 228, y: 190, w: 102, h: 42 },
+      { id: "z", label: "z = u+b",   sub: "grad = 0", x: 416, y: 108, w: 112, h: 48 },
+      { id: "y", label: "y = tanh(z)", sub: "grad = 0", x: 598, y: 108, w: 126, h: 48 },
+    ],
+    edges: [
+      { from: "w", to: "u" },
+      { from: "x", to: "u" },
+      { from: "u", to: "z" },
+      { from: "b", to: "z" },
+      { from: "z", to: "y" },
+    ],
+  });
+
+  const graphStates = [
+    {
+      label: { u: "u = -0.91", z: "z = -0.71", y: "y = -0.6107" },
+      sub: { w: "grad = 0.0000", x: "grad = 0.0000", u: "grad = 0.0000", b: "grad = 0.0000", z: "grad = 0.0000", y: "grad = 0.0000" },
+      highlight: ["u", "z", "y"], done: [], edges: [], elabel: {},
+    },
+    {
+      label: { u: "u = -0.91", z: "z = -0.71", y: "y = -0.6107" },
+      sub: { w: "grad = 0", x: "grad = 0", u: "grad = 0", b: "grad = 0", z: "grad = 0", y: "grad = 1.0000" },
+      highlight: ["y"], done: [], edges: [], elabel: {},
+    },
+    {
+      label: { u: "u = -0.91", z: "z = -0.71", y: "y = -0.6107" },
+      sub: { w: "grad = 0", x: "grad = 0", u: "grad = 0", b: "grad = 0", z: "grad = 0.6271", y: "grad = 1.0000" },
+      highlight: ["z"], done: ["y"], edges: [["z", "y"]], elabel: { "z→y": "×(1-y²)=0.6271" },
+    },
+    {
+      label: { u: "u = -0.91", z: "z = -0.71", y: "y = -0.6107" },
+      sub: { w: "grad = 0", x: "grad = 0", u: "grad = 0.6271", b: "grad = 0.6271", z: "grad = 0.6271", y: "grad = 1.0000" },
+      highlight: ["u", "b"], done: ["y", "z"], edges: [["u", "z"], ["b", "z"]], elabel: { "u→z": "×1", "b→z": "×1" },
+    },
+    {
+      label: { u: "u = -0.91", z: "z = -0.71", y: "y = -0.6107" },
+      sub: { w: "grad = +0.4390", x: "grad = -0.8152", u: "grad = 0.6271", b: "grad = 0.6271", z: "grad = 0.6271", y: "grad = 1.0000" },
+      highlight: ["w", "x"], done: ["y", "z", "u", "b"], edges: [["w", "u"], ["x", "u"]], elabel: { "w→u": "×x=0.7", "x→u": "×w=-1.3" },
+    },
+  ];
+
+  Lab.onStep("#step-neuron", (idx) => {
+    g.reset();
+    g.apply(graphStates[idx]);
+  });
+
+  // 2. 神经元激活与梯度饱和实验台
+  const acts = {
+    tanh: {
+      f: (z) => Math.tanh(z),
+      df: (z) => 1 - Math.tanh(z) ** 2,
+      name: "tanh(z)",
+      dname: "1 - tanh²(z)",
+      yRange: [-1.25, 1.25],
+    },
+    sigmoid: {
+      f: (z) => LabMath.sigmoid(z),
+      df: (z) => { const s = LabMath.sigmoid(z); return s * (1 - s); },
+      name: "σ(z)",
+      dname: "σ(z)(1-σ(z))",
+      yRange: [-0.2, 1.2],
+    },
+    relu: {
+      f: (z) => Math.max(0, z),
+      df: (z) => (z > 0 ? 1 : 0),
+      name: "ReLU(z)",
+      dname: "1[z > 0]",
+      yRange: [-0.5, 4.5],
+    },
+  };
+
+  Lab.playground("#pg-neuron", {
+    title: "单神经元前反向传播 & 数值差分实时对比",
+    params: [
+      { name: "w", label: "权重 $w$", min: -3.5, max: 3.5, step: 0.05, value: -1.3 },
+      { name: "x", label: "输入 $x$", min: -2.5, max: 2.5, step: 0.05, value: 0.7 },
+      { name: "b", label: "偏置 $b$", min: -2.0, max: 2.0, step: 0.05, value: 0.2 },
+    ],
+    selects: [
+      { name: "act", label: "激活函数 $\\sigma$", options: [["tanh", "tanh（双曲正切）"], ["sigmoid", "Sigmoid"], ["relu", "ReLU"]], value: "tanh" },
+    ],
+    buttons: [
+      { label: "重置为源码测试点", primary: true, onClick: (_p, ctl) => { ctl.set("act", "tanh"); ctl.set("w", -1.3); ctl.set("x", 0.7); ctl.set("b", 0.2); } },
+      { label: "观察饱和梯度消失 (|z|≈5)", onClick: (_p, ctl) => { ctl.set("act", "tanh"); ctl.set("w", 2.5); ctl.set("x", 2.0); ctl.set("b", 0.2); } },
+      { label: "观察 Dead ReLU (z<0)", onClick: (_p, ctl) => { ctl.set("act", "relu"); ctl.set("w", -1.5); ctl.set("x", 1.2); ctl.set("b", -0.2); } },
+    ],
+    caption: "紫实线为激活输出 $\\sigma(z)$，橙虚线为局部导数 $\\sigma'(z)$；圆点标出当前线性组合 $z = wx + b$ 的工作位置。",
+    render(p, out) {
+      out.innerHTML = '<div class="chart-host"></div>';
+      const A = acts[p.act] || acts.tanh;
+      const z = p.w * p.x + p.b;
+      const y = A.f(z);
+      const dz = A.df(z);
+      const dw = dz * p.x;
+      const eps = 1e-6;
+      const numDw = (A.f((p.w + eps) * p.x + p.b) - A.f((p.w - eps) * p.x + p.b)) / (2 * eps);
+
+      LabPlot.chart(out.querySelector(".chart-host"), {
+        x: [-5, 5],
+        y: A.yRange,
+        xLabel: "线性输出 z = w·x + b",
+        yLabel: "数值 / 局部斜率",
+        height: 290,
+      })
+        .fn(A.f, { label: A.name, color: 1 })
+        .fn(A.df, { label: A.dname, color: 2, dash: true })
+        .vline(z, { color: 3, label: `z = ${Lab.fmt(z, 2)}` })
+        .point(z, y, { color: 1 })
+        .point(z, dz, { color: 2 })
+        .draw();
+
+      Lab.readout(out, {
+        "线性组合 $z = wx+b$": z,
+        "前向输出 $y$": y,
+        "局部导数 $\\partial y/\\partial z$": dz,
+        "解析梯度 $\\partial y/\\partial w$": dw,
+        "中心差分 $g_{\\text{num}}$": numDw,
+        "解析 vs 差分绝对误差": Math.abs(dw - numDw),
+      }, 6);
+    },
+  });
+});
+</script>
+</body>
+</html>

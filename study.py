@@ -8,6 +8,7 @@ study.py — 本地学习流零依赖 CLI 助手
   python3 study.py dict <关键词>            # 把上层仓库当字典：秒搜核心章节中的概念/公式位置
   python3 study.py paper <slug> [--deep|--skim]  # 从精读/略读模板新建论文卡片
   python3 study.py lc <slug>               # 新建带 assert 自测的 LeetCode 练习文件
+  python3 study.py learn [子命令 ...]       # lab-teach 交互式课程与 HTML 笔记工作区（默认 status）
   python3 study.py brief                   # 生成 WEB_AI_BRIEF.md 供网页端 AI / 多设备秒级同步进度
 """
 
@@ -15,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import os
 import re
@@ -91,6 +93,18 @@ def bar(done: int, total: int, width: int = 24) -> str:
     return f"[{'█' * filled}{'░' * (width - filled)}] {done}/{total} ({pct:.0f}%)"
 
 
+def _load_course_engine():
+    script = LAB_DIR / ".agents" / "skills" / "lab-teach" / "scripts" / "course.py"
+    if not script.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("lab_teach_course", script)
+    if spec is None or spec.loader is None:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def cmd_status(_args: argparse.Namespace) -> None:
     r_done, r_total = count_checkboxes(ROADMAP_FILE)
     p_done, p_total = count_checkboxes(PAPERS_LIST_FILE)
@@ -130,6 +144,12 @@ def cmd_status(_args: argparse.Namespace) -> None:
                 print(f"   • {item}")
             if len(open_tasks) > 4:
                 print(f"   ... 其余 {len(open_tasks) - 4} 项用 `python3 study.py week {active_w}` 查看")
+    course_mod = _load_course_engine()
+    if course_mod is not None:
+        print("-" * 64)
+        print("📘 交互式课程工作区 (学习/ · lab-teach):")
+        for line in course_mod.summary_lines():
+            print(f"  {line}")
     print("=" * 64)
 
 
@@ -357,6 +377,12 @@ def cmd_brief(_args: argparse.Namespace) -> None:
         if done_tasks
         else "- 刚刚起步（0 基础破冰阶段）"
     )
+    course_mod = _load_course_engine()
+    learn_md = (
+        "\n".join(f"- {line.strip()}" for line in course_mod.summary_lines())
+        if course_mod is not None
+        else "- 暂无（运行 `python3 study.py learn status` 查看）"
+    )
     today_iso = dt.date.today().isoformat()
 
     brief_md = f"""# 🤝 WEB_AI_BRIEF — 网页端 AI / 跨设备实时学习交接单
@@ -368,11 +394,11 @@ def cmd_brief(_args: argparse.Namespace) -> None:
 
 ## 1. 给网页端 AI 的系统指令（System Persona）
 
-你现在是我的 **27 届实习（主攻 LLM → AI Agent → 具身智能 VLA）专属苏格拉底导师与面试官**。请严格遵守以下交互准则：
-1. **拒绝长篇翻译腔**：解释任何数学或架构概念时，先用 **不超过 3 句话** 说清它解决了上一代技术的什么痛点，再用 **2×2 极小具体数值例子** 带我手算一遍。
-2. **禁止无脑代写核心算法**：涉及核心模块（Attention、RoPE、DPO/GRPO Loss、ReAct、雅可比 IK 等）时，先引导我说出思路或给我留 `# TODO` 填空，确保我在面试时能手撕并扛住 3 层追问。
+你现在是我的 **27 届实习（主攻 LLM → AI Agent → 具身智能 VLA）专属 AI 课程导师与结对教练**。请严格遵守以下交互准则：
+1. **以教会我为第一目标，拒绝翻译腔**：讲任何概念时，先用 **不超过 3 句话** 说清它解决了上一代技术的什么痛点，再用 **2×2 极小具体数值例子** 建立直觉，接着把原理、公式推导与真实代码对应关系彻底讲透；默认**不强制留作业或考核**，除非我主动说「练一下 / 盲写 / 考考我」。
+2. **项目核心算法保面试可解释性**：推进 `projects/p1..p5` 简历项目核心模块（Attention、RoPE、DPO/GRPO Loss、ReAct、雅可比 IK 等）或我在 `concepts/` 盲写时，确保我能手撕并扛住 3 层追问。
 3. **知晓我的三端算力配置**：本机有 `RTX 4080 Laptop 12GB`（支持 BF16 + FlashAttention-2，主力开发与中小训练/MuJoCo 仿真），备用 `Colab T4 16GB`（仅支持 FP16），远程有 `A800 80GB`（跑 vLLM、3B Agentic RL 和 7B VLA 微调）。
-4. **沉淀闭环**：当我们聊完一篇论文或攻克一个卡点时，请按 Markdown 代码块输出精简总结，方便我复制回 Git 仓库的 `papers/` 或 `daily/` 目录。
+4. **沉淀闭环**：聊完一个知识点、一篇论文或攻克一个卡点时，按 Markdown 代码块输出精简总结，方便我同步回 `学习/`、`papers/` 或 `daily/`。
 
 ---
 
@@ -382,6 +408,9 @@ def cmd_brief(_args: argparse.Namespace) -> None:
 - **30 篇精选论文**：`{p_done} / {p_total}`
 - **Hot100 手撕题**：`{l_done} / {l_total}`
 - **最近一次打卡文件**：`daily/{latest_daily_name}`
+
+### 📘 当前交互式学习课题（`学习/`）
+{learn_md}
 
 ### 📍 当前正在攻坚的周次：{active_header}
 {open_md}
@@ -406,6 +435,13 @@ def main() -> None:
     # Windows 控制台默认 GBK，print 中文/emoji 会 UnicodeEncodeError
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if len(sys.argv) >= 2 and sys.argv[1] == "learn":
+        course_mod = _load_course_engine()
+        if course_mod is None:
+            sys.exit("❌ 未找到 .agents/skills/lab-teach/scripts/course.py")
+        course_mod.main(sys.argv[2:] or ["status"])
+        return
+
     parser = argparse.ArgumentParser(description="AI Lab 本地学习流 CLI 助手")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -431,6 +467,8 @@ def main() -> None:
 
     p_lc = sub.add_parser("lc", help="新建带本地 assert 测试的 LeetCode 脚本")
     p_lc.add_argument("slug", help="题目标识，如 001_two_sum / 146_lru_cache")
+
+    sub.add_parser("learn", help="交互式课程与 HTML 笔记工作区（详见 study.py learn -h）")
 
     sub.add_parser("brief", help="生成 WEB_AI_BRIEF.md 供网页端 AI 与多设备秒级同步")
 

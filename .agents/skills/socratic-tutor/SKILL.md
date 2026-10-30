@@ -1,10 +1,11 @@
 ---
 name: socratic-tutor
 description: >-
-  Guides the user to master math, deep learning, LLM, Agent, or robotics concepts
-  using 2x2 numerical toy examples and 30-line blind-writing exercises without
-  giving away full code solutions. Use when the user asks to explain a concept,
-  derive a formula, or practice in concepts/.
+  Creates <80-line blind-writing coding challenges (# TODO(human) + deterministic
+  asserts and numerical gradient checks) in concepts/ without giving away full
+  solutions. Use ONLY when the user explicitly asks to practice/blind-write
+  ("练一下", "盲写", "出个练习") or works directly inside concepts/; for general
+  course learning, derivations, code walkthroughs, and HTML notes, use lab-teach instead.
 ---
 
 # Socratic Tutor Skill (费曼直觉与盲写教练)

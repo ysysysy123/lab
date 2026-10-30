@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}} · {{TOPIC_TITLE}}</title>
+<meta name="lab:topic" content="{{TOPIC}}">
+<meta name="lab:num" content="{{NUM}}">
+<meta name="lab:step" content="{{STEP}}">
+<meta name="lab:date" content="{{DATE}}">
+<link rel="stylesheet" href="{{ASSETS}}/lab.css">
+</head>
+<body>
+<!--
+  ================= lab-teach 课程页模板（由 course.py new-lesson 生成） =================
+  写作规则（完整规范见 .agents/skills/lab-teach/references/html-lesson.md）：
+  1. 一课只教一个「可触摸的收获」，15–25 分钟读完；不需要的 section 直接删掉，顺序可按知识类型调整。
+  2. 所有关键数字来自 Python 金标准（course.py golden），交互结果用 Lab.check 比对。
+  3. 代码块优先用 course.py snippet 从 AI Tutorial Notebook / Lab 真实文件截取，保留 data-file 与行号。
+  4. 练习/自测默认折叠（details.reveal），不强制；面试追问放折叠区。
+  5. 写完删除所有 TODO-LESSON 占位，并运行 course.py check 本文件。
+  ===================================================================================
+-->
+<div class="lab-layout">
+  <nav id="lab-toc" aria-label="目录"></nav>
+
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="{{HOME}}">📚 学习地图</a> / <a href="{{PLAN}}">{{TOPIC_TITLE}}</a> / 第 {{NUM}} 课</div>
+      <h1>{{TITLE}}</h1>
+      <p class="subtitle">TODO-LESSON 一句话副标题：这节课解决什么困惑</p>
+      <div class="chips">
+        <span class="chip">⏱ 约 20 分钟</span>
+        <span class="chip">🧭 计划步骤 {{STEP}}</span>
+        <span class="chip">📅 {{DATE}}</span>
+        <span class="chip">📓 TODO-LESSON 主来源（Notebook / Lab 文件）</span>
+      </div>
+    </header>
+
+    <div class="win">
+      <div class="icon">🎯</div>
+      <div>
+        <h4>本课收获</h4>
+        <p>TODO-LESSON 学完你能 ____（一个具体、可观察的能力，例如「手算出 dw = -0.5644 并说清每一步」）。</p>
+      </div>
+    </div>
+
+    <div class="prereq">
+      <b>前置依赖：</b>
+      <span class="known">✓ TODO-LESSON 已掌握的前置（来自 learning-records / ROADMAP [x]）</span> ·
+      <span class="gap">△ TODO-LESSON 需要顺手补的前置（本课 §1 用 3 句话补上）</span>
+    </div>
+
+    <!-- ========== §1 痛点与直觉：不超过 3 段，先给画面再给术语 ========== -->
+    <section>
+      <h2><span class="num">01</span>痛点与直觉</h2>
+      <p>TODO-LESSON 上一代方法卡在哪里？用一个生活类比或极小数字例子建立画面。</p>
+      <div class="callout intuition">
+        <span class="ct">直觉</span>
+        <p>TODO-LESSON 一句话直觉。</p>
+      </div>
+    </section>
+
+    <!-- ========== §2 原理：机制是什么、为什么这样设计（可配 graph / mermaid / shape 表） ========== -->
+    <section>
+      <h2><span class="num">02</span>原理</h2>
+      <p>TODO-LESSON</p>
+      <!-- 张量形状追踪表示例：
+      <table class="shape"><tr><th>步骤</th><th>形状</th><th>说明</th></tr>
+        <tr><td>输入 X</td><td>(B, T, C)</td><td>…</td></tr></table> -->
+    </section>
+
+    <!-- ========== §3 公式推导：逐步演示，每步只做一件事，并写出「这一步用了什么」 ========== -->
+    <section>
+      <h2><span class="num">03</span>公式推导</h2>
+      <div class="lab-stepper" data-title="TODO-LESSON 推导标题" data-mode="accumulate">
+        <div class="step" data-title="写出目标">
+          <p>TODO-LESSON $$L = \dots$$</p>
+        </div>
+        <div class="step" data-title="链式法则展开">
+          <p>TODO-LESSON 这一步用了：…</p>
+        </div>
+      </div>
+      <div class="eq-explain">
+        <p>$$\text{TODO-LESSON 最终公式}$$</p>
+        <dl>
+          <dt>$x$</dt><dd>TODO-LESSON 符号含义 + 形状</dd>
+        </dl>
+      </div>
+      <details class="reveal deep">
+        <summary>更严格的推导 / 边界情况</summary>
+        <div><p>TODO-LESSON（可删）</p></div>
+      </details>
+    </section>
+
+    <!-- ========== §4 代码讲解：真实代码 + 逐段讲解（code-walk），行号与源文件一致 ========== -->
+    <section>
+      <h2><span class="num">04</span>代码讲解</h2>
+      <div class="code-walk" data-dim>
+<!-- 用 `python3 study.py learn snippet <文件> --lines a-b` 生成下面的 <pre>，不要手抄代码 -->
+<pre data-file="TODO-LESSON 路径" data-start="1"><code class="language-python">TODO-LESSON</code></pre>
+        <ol class="walk">
+          <li data-lines="1-2">TODO-LESSON 这几行在做什么、对应公式哪一项</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ========== §5 交互实验：参数调整 / 逐步演示 / 动态图表；默认值结果用 Lab.check 对齐 Python ========== -->
+    <section>
+      <h2><span class="num">05</span>交互实验</h2>
+      <div id="pg1"></div>
+      <p class="small muted">TODO-LESSON 引导观察：把 __ 拖到 __，你会看到 __，因为 __。</p>
+    </section>
+
+    <!-- ========== §6 小结：3–5 条 + 一句话面试版 ========== -->
+    <section>
+      <h2><span class="num">06</span>小结</h2>
+      <div class="callout summary">
+        <span class="ct">记住这几条</span>
+        <ul>
+          <li>TODO-LESSON</li>
+        </ul>
+      </div>
+      <div class="callout interview">
+        <span class="ct">30 秒面试版</span>
+        <p>TODO-LESSON 用面试口吻把本课讲一遍。</p>
+      </div>
+    </section>
+
+    <!-- ========== 可选：自测与面试追问（默认折叠，不强制） ========== -->
+    <section>
+      <h2><span class="num">07</span>想检验一下？（可选）</h2>
+      <details class="reveal q">
+        <summary>TODO-LESSON 问题 1</summary>
+        <div><p>TODO-LESSON 答案与解释</p></div>
+      </details>
+      <details class="reveal q">
+        <summary>🎤 面试追问：TODO-LESSON</summary>
+        <div><p>TODO-LESSON</p></div>
+      </details>
+    </section>
+
+    <section>
+      <h2><span class="num">08</span>延伸阅读</h2>
+      <div class="callout source">
+        <span class="ct">首选资料</span>
+        <p>TODO-LESSON 最值得看的一个一手资料（视频 / 论文 / Notebook 小节）+ 看什么、看多久。</p>
+      </div>
+    </section>
+
+    <!-- LAB:NAV -->
+    <nav class="lab-nav"></nav>
+    <!-- /LAB:NAV -->
+
+    <div class="ask-ai">💬 哪里没懂，直接问 AI 老师。常用指令：<code>详细推导</code> · <code>讲解代码</code> · <code>可视化</code> · <code>继续</code> · <code>整理笔记</code> · <code>练一下</code>（可选盲写）</div>
+    <footer class="lab-footer">生成于 {{DATE}} · lab-teach · 数值来自 Python 金标准，交互结果见下方校验面板</footer>
+  </main>
+
+  <aside class="lab-margin"></aside>
+</div>
+
+<!-- LAB:GOLDEN -->
+<script type="application/json" id="lab-golden">{}</script>
+<!-- /LAB:GOLDEN -->
+
+<script src="{{ASSETS}}/lab.js"></script>
+<script src="{{ASSETS}}/lab-math.js"></script>
+<script src="{{ASSETS}}/lab-plot.js"></script>
+<script>
+Lab.ready(() => {
+  // TODO-LESSON 交互实验。示例：
+  // const G = Lab.golden;
+  // Lab.playground("#pg1", {
+  //   title: "调参观察",
+  //   params: [{ name: "w", label: "权重 w", min: -3, max: 3, step: 0.01, value: -1.3 }],
+  //   render(p, out) {
+  //     out.innerHTML = '<div class="fig"></div>';
+  //     LabPlot.chart(out.querySelector(".fig"), { x: [-3, 3], height: 280 }).fn(Math.tanh, { label: "tanh" }).draw();
+  //     Lab.readout(out, { "w": p.w });
+  //   },
+  // });
+  // Lab.check("dw", computedDw);   // 与 lab-golden 中的 dw 比对
+});
+</script>
+</body>
+</html>

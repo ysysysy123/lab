@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>标量自动微分与计算图反向传播速查卡 · 速查</title>
+<meta name="lab:kind" content="reference">
+<meta name="lab:date" content="2026-10-30">
+<link rel="stylesheet" href="../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body class="ref">
+<div class="lab-layout">
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../index.html">📚 学习地图</a> / 速查表</div>
+      <h1>标量自动微分与计算图反向传播速查卡</h1>
+      <p class="subtitle">手撕 micrograd / 回答「PyTorch backward 底层干了什么」的 1 页浓缩精华</p>
+      <div class="chips">
+        <span class="chip">📅 更新于 2026-10-30</span>
+        <span class="chip">🔗 来源：<a href="../w01-自动微分与P1/lessons/0001-scalar-autograd-chain.html">w01 第 1 课</a></span>
+        <span class="chip">💻 concepts/w01_micro_autograd.py</span>
+      </div>
+    </header>
+
+    <div class="ref-grid">
+      <section>
+        <h3>1. 单步反向传播通式</h3>
+        <p>$$\text{child.grad} \;\mathrel{+}=\; \frac{\partial\,\text{out}}{\partial\,\text{child}} \cdot \text{out.grad}$$</p>
+        <table>
+          <tr><th>算子 $\text{out}$</th><th>局部导数 $\partial\,\text{out}/\partial a$</th><th>直觉角色</th></tr>
+          <tr><td>$a + b$</td><td>$1$</td><td>梯度路由器（原样分发）</td></tr>
+          <tr><td>$a \cdot b$</td><td>$b$</td><td>互换搭档前向值（需存激活）</td></tr>
+          <tr><td>$a^k$</td><td>$k a^{k-1}$</td><td>幂函数法则</td></tr>
+          <tr><td>$\tanh(a)$</td><td>$1 - \text{out}^2$</td><td>直接复用前向输出 $t$</td></tr>
+          <tr><td>$\text{ReLU}(a)$</td><td>$\mathbb{1}[a &gt; 0]$</td><td>正区直通、负区截断为 0</td></tr>
+          <tr><td>$\exp(a)$</td><td>$\text{out}$</td><td>导数等于自身前向输出</td></tr>
+        </table>
+      </section>
+
+      <section>
+        <h3>2. <code>backward()</code> 三条铁律</h3>
+        <ul>
+          <li><strong>起点置 1</strong>：<code>self.grad = 1.0</code>（对应 $\frac{\partial L}{\partial L}=1$，否则全图乘 0）。</li>
+          <li><strong>支路累加 <code>+=</code></strong>：同一节点多路复用（如 $a\cdot a + a$、残差分支）按全导数法则求和；所以每次迭代前必须 <code>zero_grad()</code>。</li>
+          <li><strong>DFS 逆拓扑序</strong>：用 <code>visited</code> 去重后序遍历再 <code>reversed(topo)</code>，保证下游梯度全汇齐后才向更上游回传。</li>
+        </ul>
+        <p><strong>中心差分梯度检验</strong>（$\epsilon = 10^{-6}$，误差 $O(\epsilon^2)$）：</p>
+        <p>$$g_{\text{num}} = \frac{L(w + \epsilon) - L(w - \epsilon)}{2\epsilon}$$</p>
+      </section>
+
+      <section>
+        <h3>3. 15 行手撕核心模板</h3>
+<pre data-file="concepts/w01_micro_autograd.py" data-start="80"><code class="language-python">def backward(self) -&gt; None:
+    topo: list[Value] = []
+    visited: set[Value] = set()
+
+    def build_topo(v: Value) -&gt; None:
+        if v not in visited:
+            visited.add(v)
+            for child in v._prev:
+                build_topo(child)
+            topo.append(v)
+
+    build_topo(self)
+    self.grad = 1.0
+    for node in reversed(topo):
+        node._backward()</code></pre>
+      </section>
+
+      <section>
+        <h3>4. 高频防坑与 30 秒面试表达</h3>
+        <ul>
+          <li><strong>为什么用反向模式而非前向模式？</strong> 输入参数 $N$ 极大而 Loss 是 1 个标量，反向模式 1 趟拿齐全部 $N$ 个偏导（前向模式需 $N$ 趟）。</li>
+          <li><strong>为什么训练显存远大于参数显存？</strong> 乘法门与非线性门在反向求导时必须读取前向缓存的激活张量。</li>
+          <li><strong>梯度检验易错点</strong>：解析梯度与数值差分必须在<strong>同一组输入与权重状态</strong>下对比，且避开 ReLU 在 $z=0$ 处的不可导折点。</li>
+        </ul>
+      </section>
+    </div>
+
+    <footer class="lab-footer">lab-teach 速查表 · 打印友好（浏览器按 Ctrl+P 可直接导出单页 PDF）</footer>
+  </main>
+</div>
+<script src="../../.agents/skills/lab-teach/assets/lab.js"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{TITLE}} · 速查</title>
+<meta name="lab:kind" content="reference">
+<meta name="lab:date" content="{{DATE}}">
+<link rel="stylesheet" href="{{ASSETS}}/lab.css">
+</head>
+<body class="ref">
+<!--
+  速查表（reference）规则：课程很少回看，速查表会被反复看。
+  - 只放压缩后的精华：核心公式 + 形状 + 10–20 行关键代码 + 常见坑 + 一句话面试版。
+  - 每块 section 独立成卡片，打印 A4 1–2 页为宜；链接回对应课程（../<topic>/lessons/xxxx.html）。
+  - 写完删除 TODO-LESSON 占位并运行 course.py check。
+-->
+<div class="lab-layout">
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="{{HOME}}">📚 学习地图</a> / 速查表</div>
+      <h1>{{TITLE}}</h1>
+      <p class="subtitle">TODO-LESSON 一句话：这张表帮你在什么时候快速回忆什么</p>
+      <div class="chips"><span class="chip">📅 更新于 {{DATE}}</span><span class="chip">🔗 来源课程：TODO-LESSON</span></div>
+    </header>
+
+    <div class="ref-grid">
+      <section>
+        <h3>核心公式</h3>
+        <p>TODO-LESSON $$\dots$$</p>
+      </section>
+      <section>
+        <h3>形状 / 符号</h3>
+        <table class="shape"><tr><th>符号</th><th>形状</th><th>含义</th></tr><tr><td>TODO-LESSON</td><td></td><td></td></tr></table>
+      </section>
+      <section>
+        <h3>关键代码</h3>
+<pre data-file="TODO-LESSON"><code class="language-python">TODO-LESSON</code></pre>
+      </section>
+      <section>
+        <h3>常见坑</h3>
+        <ul><li>TODO-LESSON</li></ul>
+      </section>
+      <section>
+        <h3>30 秒面试版</h3>
+        <p>TODO-LESSON</p>
+      </section>
+    </div>
+    <footer class="lab-footer">lab-teach 速查表 · 打印友好（Ctrl+P）</footer>
+  </main>
+</div>
+<script src="{{ASSETS}}/lab.js"></script>
+</body>
+</html>
