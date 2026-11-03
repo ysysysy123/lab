@@ -793,6 +793,18 @@ def cmd_shot(a) -> None:
     print(f"📸 {out}")
 
 
+def cmd_sync_site(_a) -> None:
+    build_index()
+    obsidian_root = LAB_DIR.parent.parent.parent / "obsidian_study"
+    script = obsidian_root / "scripts" / "sync_lab.mjs"
+    if not script.exists():
+        sys.exit(f"❌ 未找到同步脚本：{script}")
+    r = subprocess.run(["node", str(script)], cwd=str(obsidian_root))
+    if r.returncode != 0:
+        sys.exit("❌ 同步到网站目录失败")
+    print("✨ 已成功同步到 obsidian_study/website/static/ai-lab/")
+
+
 def cmd_open(a) -> None:
     p = str(Path(a.path).resolve())
     opener = "open" if sys.platform == "darwin" else "xdg-open" if shutil.which("xdg-open") else None
@@ -825,12 +837,13 @@ def main(argv: list[str] | None = None) -> None:
     s = sub.add_parser("shot"); s.add_argument("path"); s.add_argument("--out"); s.add_argument("--width", type=int, default=1440); s.add_argument("--height", type=int, default=2200)
     s = sub.add_parser("open"); s.add_argument("path")
     sub.add_parser("py")
+    sub.add_parser("sync-site", help="同步课程 HTML 到个人公开网站 static/ai-lab")
     a = ap.parse_args(argv)
     {
         "status": cmd_status, "context": cmd_context, "nb": cmd_nb, "snippet": cmd_snippet,
         "new-topic": cmd_new_topic, "new-lesson": cmd_new_lesson, "new-ref": cmd_new_ref, "record": cmd_record,
         "done": cmd_done, "reviewed": cmd_reviewed, "index": cmd_index, "golden": cmd_golden,
-        "check": cmd_check, "shot": cmd_shot, "open": cmd_open, "py": cmd_py,
+        "check": cmd_check, "shot": cmd_shot, "open": cmd_open, "py": cmd_py, "sync-site": cmd_sync_site,
     }[a.cmd](a)
 
 
