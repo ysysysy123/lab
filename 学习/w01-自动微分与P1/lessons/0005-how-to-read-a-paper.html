@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keshav《How to Read a Paper》三遍阅读法 · w01-自动微分与P1</title>
+<meta name="lab:topic" content="w01-自动微分与P1">
+<meta name="lab:num" content="5">
+<meta name="lab:step" content="5">
+<meta name="lab:date" content="2026-11-02">
+<link rel="stylesheet" href="../../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body>
+<div class="lab-layout">
+  <nav id="lab-toc" aria-label="目录"></nav>
+
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../../index.html">📚 学习地图</a> / <a href="../../index.html#w01-自动微分与P1">w01-自动微分与P1</a> / 第 5 课</div>
+      <h1>Keshav《How to Read a Paper》三遍阅读法</h1>
+      <p class="subtitle">如何用「渐进式雷达扫描」替代逐词硬啃，在 16 周内无痛吃透 30 篇经典论文并省出 88.5 小时写代码？</p>
+      <div class="chips">
+        <span class="chip">⏱ 约 18 分钟</span>
+        <span class="chip">🧭 计划步骤 5 / 5</span>
+        <span class="chip">📄 papers/READING_LIST.md</span>
+        <span class="chip">🛠 study.py paper --skim / --deep</span>
+      </div>
+    </header>
+
+    <div class="win">
+      <div class="icon">🎯</div>
+      <div>
+        <h4>本课收获</h4>
+        <p>彻底戒掉「从第 1 页查字典硬啃到附录」的劝退读法，熟练运用 Keshav <strong>三遍雷达扫描法（Pass 1 五问止损 → Pass 2 抓主图 30m 略读 → Pass 3 脑内虚拟复现 2h 精读）</strong>，并立刻用 <code>study.py paper</code> 跑通本仓「19 篇 🟢 三句话 + 11 篇 🔴 半页卡」的轻量沉淀工作流。</p>
+      </div>
+    </div>
+
+    <div class="prereq">
+      <b>前置依赖：</b>
+      <span class="known">✓ 基础算子与计算图思维（第 1–4 课已建立「痛点 → 核心公式 → 20 行真代码」的拆解肌肉记忆）</span> ·
+      <span class="gap">△ 无需顶会审稿经验或满分英语（读不懂论文 90% 不是因为词汇量，而是跳进了错误的阅读层级）</span>
+    </div>
+
+    <!-- ========== §1 痛点与直觉 ========== -->
+    <section>
+      <h2><span class="num">01</span>痛点与直觉：为什么从头逐词硬啃是最高效的劝退方式？</h2>
+      <p>几乎所有初学者第一次读 AI 顶会论文都会踩进同一个泥潭：打开一篇 15 页 PDF，从 Abstract 第一个生词开始查词典，在第 2 节 Related Work 里被二十几个陌生模型缩写绕晕，再一头撞进第 4 节冗长的收敛性引理证明里——耗掉整整 4–5 个小时，合上电脑却连<strong>「它到底改了哪一行公式、比前人强在哪」</strong>都讲不出来。</p>
+
+      <aside class="sidenote">
+        <b>论文的排版 ≠ 阅读顺序</b><br>
+        作者为了通过同行评审（Peer Review），必须把背景综述、严密证明和边角消融全塞进正文；但作为工程与算法学习者，你需要的是按<strong>投资回报率（ROI）</strong>分层提取信息。
+      </aside>
+
+      <p>滑铁卢大学 S. Keshav 教授在经典指南 <em>How to Read a Paper (ACM SIGCOMM CCR, 2007)</em> 中给出了流传近二十年的解药：<strong>永远不要线性读论文，把阅读拆成三遍渐进式雷达扫描（Three-Pass Approach），每一遍都设死硬性的「停损时间预算」与「输出契约」。</strong></p>
+
+      <div class="callout intuition">
+        <span class="ct">卫星地图三级缩放 vs 蒙眼数砖缝</span>
+        <p>线性硬啃就像降落在一座陌生城市后直接趴在地上数地砖，爬了三小时才发现走错了城区。<br>
+        <strong>Keshav 三遍法则是连续拨动地图缩放滚轮</strong>：<strong>第一遍（10,000 米高空）</strong>花 5–10 分钟看清地形全貌，不好直接关掉；<strong>第二遍（500 米航拍）</strong>花 30 分钟看懂主干道立交桥（Figure 1）与通车流量表（Main Table）；<strong>第三遍（地面拆解图纸）</strong>只针对最核心的少数基石桥梁，花 2 小时亲手重推一遍受力公式并核对施工代码。</p>
+      </div>
+    </section>
+
+    <!-- ========== §2 三遍阅读法全景决策流 ========== -->
+    <section>
+      <h2><span class="num">02</span>全景决策流：三遍扫描的动作边界与止损门禁</h2>
+      <p>点击下方「下一步」（或按键盘 <kbd>←</kbd> <kbd>→</kbd>），观察一篇新论文如何经过三道门禁分流，以及它如何精准映射到本仓 <code>papers/READING_LIST.md</code> 的 <strong>19 篇 🟢 略读 + 11 篇 🔴 精读</strong>：</p>
+
+      <div class="lab-figure">
+        <div id="graph-passes"></div>
+        <figcaption>Keshav 三遍阅读法状态机：每过一道门禁才决定是否追加时间预算，绝不为沉没成本买单。</figcaption>
+      </div>
+
+      <div class="lab-stepper" id="step-passes" data-title="Keshav 三遍阅读法与本仓 30 篇清单映射">
+        <div class="step" data-title="第一遍 Pass 1：鸟瞰筛查（5–10 分钟 · 淘汰 80% 噪音）">
+          <p><strong>严格禁令：正文推导与实验细节一行都不许看！</strong>只扫以下 6 个锚点：</p>
+          <ol>
+            <li><strong>Title &amp; Abstract</strong>（标题与摘要：一句话抓它在干什么）；</li>
+            <li><strong>Introduction</strong>（引言头尾段：前人卡在哪？本文立了什么靶子？）；</li>
+            <li><strong>Section &amp; Subsection Headings</strong>（各级小标题：只看骨架，忽略正文）；</li>
+            <li><strong>Conclusion</strong>（结论段：核对它自称做到了什么）；</li>
+            <li><strong>References</strong>（参考文献：扫一眼勾出你读过的熟面孔，瞬间定位技术辈分）。</li>
+          </ol>
+          <p><strong>过关契约（回答 5C 灵魂五问）</strong>：Category（测量/架构/新范式？）· Context（继承谁？）· Correctness（假设靠谱吗？）· Contributions（最大 1–2 个创新？）· Clarity（图表写得人话吗？）。日常找文献时 <strong>80% 无关或灌水论文在此直接关掉</strong>！</p>
+        </div>
+
+        <div class="step" data-title="第二遍 Pass 2：抓骨架与主图表（30–45 分钟 · 对应本仓 19 篇 🟢 略读）">
+          <p>进入正文细读，但<strong>遇到复杂的数学定理证明先无脑跳过</strong>！把全部火力集中轰炸三处：</p>
+          <ul>
+            <li><strong>盯死 Figure 1 / 架构数据流图</strong>：看清输入张量长什么样、中间加了哪一个新模块、箭头怎么合流，检查坐标轴单位与图注陷阱；</li>
+            <li><strong>圈出核心目标函数（Loss）</strong>：看懂总损失由哪几项组成，每一项在奖励什么、惩罚什么；</li>
+            <li><strong>审视 Main Table 与 Ablation（消融实验表）</strong>：比基线涨了多少？<strong>拿掉哪个子模块后指标掉得最惨？</strong>掉点最惨的那一项，就是这篇论文真正值钱的灵魂！</li>
+          </ul>
+          <p><strong>过关契约</strong>：合上 PDF，用 3 句话填完本仓 <code>_template_skim.md</code>，<strong>19 篇 🟢 略读论文到此直接打勾收工！</strong></p>
+        </div>
+
+        <div class="step" data-title="第三遍 Pass 3：脑内虚拟复现（1.5–2 小时 · 对应本仓 11 篇 🔴 精读）">
+          <p>只对决定整个技术主线命脉的 <strong>11 篇 🔴 奠基论文</strong>（如 Attention、LoRA、DPO、GRPO、ReAct、Diffusion Policy、OpenVLA、$\pi_0$）启动最高规格攻坚——核心心法叫 <strong>Virtual Re-implementation（脑内虚拟复现）</strong>：</p>
+          <ul>
+            <li><strong>同假设从零重推</strong>：假设自己站在作者动笔那天，顺着他的假设亲手推导一遍关键公式（拿 $2\times 2$ 极小数字验算，正如我们在第 1–4 课做的那样），对比你的推导与作者写法的每一处差异；</li>
+            <li><strong>印证 20 行核心 PyTorch 代码</strong>：去开源实现或本仓 <code>projects/p1..p5</code> 找到对应公式的那 20 行核心算子，看清张量 Shape 广播、Mask 填充值与超参敏感点；</li>
+            <li><strong>揪出隐含边界</strong>：记下论文刻意美化或没明说的失效场景（如显存复杂度、长尾退化），填入半页纸 <code>_template_deep.md</code>，直接转化为面试三层追问的防弹衣！</li>
+          </ul>
+        </div>
+      </div>
+
+      <table class="shape">
+        <tr><th>扫描层级</th><th>硬性时间上限</th><th>核心阅读靶点</th><th>本仓交付契约（严禁写翻译长文！）</th></tr>
+        <tr><td><strong>Pass 1 · 鸟瞰</strong></td><td>5 – 10 min</td><td>标题 / 摘要 / 引言 / 小节名 / 结论</td><td>脑内答完 5C 五问；决定「丢弃 / 略读 / 精读」</td></tr>
+        <tr><td><strong>Pass 2 · 略读 🟢</strong></td><td>30 – 45 min</td><td>Figure 1 架构图 + Loss 总式 + 消融表</td><td><code>--skim</code> 卡片：<strong>3 句话</strong>（痛点 / 招数 / 启发），共 19 篇</td></tr>
+        <tr><td><strong>Pass 3 · 精读 🔴</strong></td><td>1.5 – 2.0 h</td><td>手推核心公式 + 对照 20 行 PyTorch 源码</td><td><code>--deep</code> 卡片：<strong>半页纸</strong>（含公式推导 + 2 道面试追问），共 11 篇</td></tr>
+      </table>
+    </section>
+
+    <!-- ========== §3 真实案例演练 ========== -->
+    <section>
+      <h2 id="sec-cases"><span class="num">03</span>真实案例演练：接下来两周的真论文怎么按表拆解？</h2>
+      <p>光背方法论没体感，我们直接拿你在 W02 和 W03 马上要读的两篇镇馆之作，现场演示「🟢 30 分钟略读」与「🔴 2 小时精读」分别该怎么掐表推进：</p>
+
+      <div class="lab-tabs">
+        <div class="tab" data-label="🟢 30 分钟略读示范：W02 ResNet (2015)">
+          <div class="callout lab">
+            <span class="ct">掐表实战：Deep Residual Learning for Image Recognition</span>
+            <ol>
+              <li><strong>00–05 min（Pass 1 + 痛点图 Figure 1）</strong>：扫完摘要直接看第 1 页左下角 Figure 1——56 层普通卷积网不仅测试误差比 20 层高，<strong>连训练集误差都明显更高！</strong>当场排除「过拟合」（过拟合训练误差应该极低），一针见血锁定真凶是<strong>深层网络退化（Degradation，梯度传递与恒等映射优化困难）</strong>。</li>
+              <li><strong>05–15 min（盯死 Figure 2 残差块）</strong>：看懂跳跃连接 $y = \mathcal{F}(x, \{W_i\}) + x$。为什么好训？调用你<strong>第 1 课学的加法门铁律</strong>：反向求导 $\frac{\partial L}{\partial x} = \frac{\partial L}{\partial y}\!\left(1 + \frac{\partial \mathcal{F}}{\partial x}\right)$，括号里自带常数 $+1$，哪怕深层权重梯度趋近 $0$，上游误差照样沿恒等捷径无损直达浅层！</li>
+              <li><strong>15–25 min（扫 Table 3/4 主实验表）</strong>：152 层 ResNet 在 ImageNet 上把 Top-5 错误率干到 $3.57\%$ 夺冠，且因为用全局平均池化替代了巨型全连接层，总计算量反而比 16 层 VGG 更低。</li>
+              <li><strong>25–30 min（合上 PDF 填 3 句话卡片）</strong>：
+                <ul>
+                  <li><em>核心痛点</em>：网络无脑加深到 56 层会出现训练误差反升的「退化现象」，普通堆叠层很难拟合恒等映射。</li>
+                  <li><em>核心招数</em>：引入短路恒等连接让权重层只拟合残差 $\mathcal{F}(x)=H(x)-x$，前向输出 $\mathcal{F}(x)+x$，反向利用加法门 $+1$ 构造梯度高速公路。</li>
+                  <li><em>项目/面试启发</em>：现代 Transformer 每一层都是 <code>x = x + SubLayer(Norm(x))</code>（Pre-Norm 残差流），本质全靠 ResNet 这条 $+1$ 干道撑起百层深度。</li>
+                </ul>
+              </li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="tab" data-label="🔴 2 小时精读示范：W03 Attention Is All You Need (2017)">
+          <div class="callout formula">
+            <span class="ct">虚拟复现：精推 §3.2 缩放点积方差 + 印证 P1 20 行源码</span>
+            <ol>
+              <li><strong>00–10 min（Pass 1 · 5C 筛查）</strong>：RNN 必须按时间步 $t{-}1 \to t$ 串行算隐藏态，GPU 矩阵算力空转且长程信息易遗忘；本文彻底抛弃循环与卷积，纯用 Self-Attention 实现训练全序列并行与任意词对 $O(1)$ 交互路径。</li>
+              <li><strong>10–35 min（Pass 2 · 骨架与消融表）</strong>：看懂 Figure 1（Encoder-Decoder 双塔，后续 GPT/P1 只取带因果掩码的自回归块）与 Figure 2（SDPA → 多头拼接）；扫一眼 Table 3 消融表发现头数 $h=8, d_k=64$ 最甜，$h=1$ 表达单一、$h=32$ 单头维度太窄均掉点。</li>
+              <li><strong>35–95 min（Pass 3 · 脑内虚拟复现 §3.2）</strong>：自己重推 $\operatorname{Attention}(Q,K,V) = \operatorname{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)V$。<strong>灵魂叩问：为什么非要除以 $\sqrt{d_k}$？</strong>设 $q, k \in \mathbb{R}^{d_k}$ 各分量独立、均值 $0$ 方差 $1$，则点积 $q \cdot k = \sum_{i=1}^{d_k} q_i k_i$ 的方差累加为 $d_k$——当 $d_k = 64$ 时，点积标准差直接膨胀 $\sqrt{64} = \mathbf{8.0}$ 倍！联系<strong>第 4 课刚做的放大倍数 $k$ 实验</strong>：logits 放大 8 倍会把 Softmax 推向接近 one-hot 的尖锐饱和区，导致非最大项概率 $p_j \to 0$、局部梯度消失；除以 $\sqrt{d_k}$ 恰好把方差摁回 $1$！</li>
+              <li><strong>95–120 min（对齐 P1 的 20 行 PyTorch 算子 + 填半页精读卡）</strong>：核对 <code>view(B, T, H, d_k).transpose(1, 2)</code> 的四维重排与上三角 <code>-inf</code> 因果掩码（经 Softmax 化为精确 $0$），写下复杂度边界 $O(T^2 d)$（引出后续 KV Cache 与 FlashAttention）。</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== §4 本仓论文闭环工具链 ========== -->
+    <section>
+      <h2><span class="num">04</span>代码与工具链：本仓防长文沉淀闭环</h2>
+      <p>为了从制度上杜绝「抄了一万字翻译笔记却经不起面试官一句追问」，本仓 <code>study.py</code> 直接把 Keshav 的 Pass 2 与 Pass 3 固化成了两个极简 CLI 模板命令。点击右侧卡片查看第 316–332 行实现逻辑：</p>
+
+      <div class="code-walk" data-dim>
+<pre data-file="study.py" data-start="316" data-href="../../../study.py"><code class="language-python">def cmd_paper(args: argparse.Namespace) -&gt; None:
+    slug = re.sub(r"[^a-zA-Z0-9_\-\u4e00-\u9fff]+", "_", args.slug.strip()).strip("_")
+    mode = "skim" if args.skim else "deep"
+    tpl_path = LAB_DIR / "papers" / f"_template_{mode}.md"
+    out_path = LAB_DIR / "papers" / f"{slug}.md"
+    if out_path.exists():
+        print(f"✅ 论文笔记已存在: {out_path}")
+        return
+    if tpl_path.exists():
+        tpl = tpl_path.read_text(encoding="utf-8").replace("&#123;&#123;TITLE&#125;&#125;", slug)
+        tpl = tpl.replace("&#123;&#123;DATE&#125;&#125;", dt.date.today().isoformat())
+    else:
+        tpl = f"# {slug}\n"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(tpl, encoding="utf-8")
+    print(f"✨ 已创建{'🟢 30分钟略读卡' if mode == 'skim' else '🔴 2小时精读笔记'}: {out_path}")</code></pre>
+        <ol class="walk">
+          <li data-lines="317-320"><strong>强制二元分级</strong>：<code>--skim</code> 绑定 <code>_template_skim.md</code>（Pass 2 止步），默认或 <code>--deep</code> 绑定 <code>_template_deep.md</code>（进军 Pass 3），动笔前先对照 <code>READING_LIST.md</code> 明确时间上限。</li>
+          <li data-lines="321-323"><strong>幂等防误覆写</strong>：若同名卡片已存在则直接提示路径并安全退出，绝不冲掉你手写的公式推导与思考。</li>
+          <li data-lines="324-331"><strong>零摩擦落盘 + 单一真相源打卡</strong>：自动填入标题与当天日期生成 <code>papers/&lt;slug&gt;.md</code>；填完卡片后，只需去 <code>papers/READING_LIST.md</code> 把对应行的 <code>- [ ]</code> 勾成 <code>- [x]</code>，运行 <code>python3 study.py status</code> 即可全局同步进度。</li>
+        </ol>
+      </div>
+
+      <p>两份模板本身就是你的「防跑偏紧箍咒」——只填核心干货，多一句废话都不写：</p>
+      <div class="lab-tabs">
+        <div class="tab" data-label="🟢 _template_skim.md（30 分钟 · 仅 3 行！）">
+<pre data-file="papers/_template_skim.md" data-start="1" data-href="../../../papers/_template_skim.md"><code class="language-markdown"># 🟢 [略读·30min] &#123;&#123;TITLE&#125;&#125;
+
+- **阅读日期**：&#123;&#123;DATE&#125;&#125;
+- **1. 核心痛点**：
+- **2. 核心招数（看 Figure 1 总结一句话）**：
+- **3. 对我项目的启发 / 面试一句话总结**：</code></pre>
+        </div>
+        <div class="tab" data-label="🔴 _template_deep.md（2 小时 · 半页纸 + 20 行代码映射）">
+<pre data-file="papers/_template_deep.md" data-start="1" data-href="../../../papers/_template_deep.md"><code class="language-markdown"># 🔴 [精读] &#123;&#123;TITLE&#125;&#125;
+
+- **阅读日期**：&#123;&#123;DATE&#125;&#125;
+- **一句话核心贡献**：
+
+## 1. 它解决了前人什么痛点？（Why）
+- 
+
+## 2. 核心方法与必推公式（How）
+- **架构流向**：`输入 → ... → 输出`
+- **关键公式 / 损失函数**：
+  $$
+  
+  $$
+- **直觉解释（为什么这一项有效？）**：
+
+## 3. 代码实现映射（对应哪个项目 / 哪 20 行关键代码？）
+- 
+
+## 4. 面试官最可能追问的 2 个问题
+1. **Q**：  
+   **A**：
+2. **Q**：  
+   **A**：</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== §5 交互实验 ========== -->
+    <section>
+      <h2 id="sec-pg"><span class="num">05</span>交互实验：16 周 30 篇论文时间账本模拟器</h2>
+      <p>本仓 <a href="../../../papers/READING_LIST.md"><code>papers/READING_LIST.md</code></a> 共精选了 <strong>30 篇贯穿 LLM → Agent → 具身 VLA 的经典论文（19 篇 🟢 略读 + 11 篇 🔴 精读）</strong>。拖动下方滑块，算一算用三遍分级法替代传统线性硬啃，能为你省出多少个小时去手撕项目代码与跑实验：</p>
+
+      <div id="pg-budget"></div>
+
+      <p class="small muted">💡 <strong>账本顿悟时刻</strong>：在默认推荐配比下，读完 30 篇顶会经典总共只需 <strong>$31.5\text{h}$</strong>（每周拿出 3–4 个晚上的 45 分钟，<strong>$12.6$ 周</strong>即从容通关！），相比篇篇硬啃 4 小时的 $120.0\text{h}$ 整整省下 <strong>$88.5\text{h}$（节省 $73.75\%$）</strong>——这 $88.5$ 小时足够你把 P1 到 P5 五个硬核项目的核心算子亲手写上两遍！点一下「模拟完美主义陷阱」按钮，看看如果每篇都追求 3.5 小时全精读会发生什么。</p>
+    </section>
+
+    <!-- ========== §6 小结 ========== -->
+    <section>
+      <h2><span class="num">06</span>小结</h2>
+      <div class="callout summary">
+        <span class="ct">本课核心四句话</span>
+        <ul>
+          <li><strong>三遍渐进止损</strong>：Pass 1（5–10m 答完 5C 五问筛掉噪音）→ Pass 2（30–45m 盯死 Figure 1 + Loss + 消融表）→ Pass 3（1.5–2h 同假设脑内虚拟复现公式与代码）。</li>
+          <li><strong>二八火力分配</strong>：本仓 30 篇清单中，19 篇 🟢 论文严格停在 Pass 2 写三句话；仅 11 篇 🔴 主线基石进入 Pass 3 手推公式并映射 20 行 PyTorch 源码。</li>
+          <li><strong>拒绝翻译腔长文</strong>：写五千字中文翻译是最低效的自我感动；能合上论文画出架构流向、写出目标函数、说出消融掉点最狠的一项，才是真懂。</li>
+          <li><strong>工具链闭环</strong>：用 <code>python3 study.py paper &lt;简称&gt; --skim / --deep</code> 建卡，读完在 <code>papers/READING_LIST.md</code> 打勾。</li>
+        </ul>
+      </div>
+
+      <div class="callout interview">
+        <span class="ct">30 秒面试表达模板（当被问到「平时怎么读论文 / 最近怎么跟进前沿？」）</span>
+        <p>「我日常严格按 Keshav 的三遍阅读法做分级输入：第一遍花 5 到 10 分钟扫摘要、引言、小标题和结论，用 5C 原则快速判断痛点和增量贡献，筛掉大部分低信噪比工作；对值得了解的方法走第二遍 30 分钟略读，重点抓 Figure 1 数据流、Loss 组成和消融实验里掉点最显著的模块，沉淀成三句话卡片；而对主线基石工作——比如 DPO、GRPO 或 Diffusion Policy——我会走第三遍虚拟复现，自己用极小算例重推一遍核心梯度或目标函数，再去开源仓库核对那 20 行核心 PyTorch 实现与超参边界，直接把论文转化成项目里可跑可调的代码。」</p>
+      </div>
+    </section>
+
+    <!-- ========== §7 可选自测 ========== -->
+    <section>
+      <h2><span class="num">07</span>想检验一下？（可选 · 点击展开）</h2>
+
+      <details class="reveal q">
+        <summary>1. 读一篇新论文到了第 20 分钟，卡在正文第 3.3 节一个满是上下标的矩阵引理证明里一头雾水，按 Keshav 三遍法此时应该怎么做？</summary>
+        <div>
+          <p><strong>立刻跳过证明，继续推进 Pass 2！</strong>第 20 分钟说明你正处于 Pass 2（抓骨架与主图表阶段），此时唯一任务是记住该引理的<strong>输入条件与直观结论</strong>，先把 Figure 1 数据流与实验消融表看完。只有当这篇论文属于你的 🔴 精读主线、且确认该引理直接决定核心算子实现时，才会在 Pass 3 专门拿草稿纸带 $2\times 2$ 具体数字把它推穿。</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>2. 为什么说看实验部分时，「Ablation Study（消融实验表）」往往比「Main Table（刷榜主表）」含金量更高？</summary>
+        <div>
+          <p>刷榜主表（Main Table）里涨的那 2 个点，可能混杂了更大 Batch、更长训练步数或数据清洗技巧；而<strong>消融实验在严格控制同一套训练配置的前提下，逐一拿掉作者提出的组件 A、B、C</strong>。如果拿掉组件 A 掉点 $4.5\%$，拿掉组件 B 只掉点 $0.1\%$，你就瞬间看穿了组件 A 才是真正的底层突破，组件 B 只是凑故事的装饰品——面试讨论论文优缺点时这就是最犀利的切入点！</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>3. 🎤 面试追问：你在简历里写了读过并复现过某篇 🔴 核心论文（如 Attention / DPO），面试官怎样一句话就能试出你是「真做过 Pass 3」还是「只看了知乎二手总结」？</summary>
+        <div>
+          <p>面试官通常会直接追问<strong>公式与代码交界处的工程细节</strong>：例如「Attention 点积完不除 $\sqrt{d_k}$ 在 FP16 下前向和反向具体哪一步会出问题？Mask 是加在缩放前还是缩放后、填 <code>-1e4</code> 还是 <code>-1e9</code>？」只看二手总结的人只能背出概念名词，而做过 Pass 3（手推公式 + 对照 20 行真代码）的人能脱口而出张量 Shape 变化与数值边界（比如 FP16 下 <code>-1e9</code> 会直接溢出报错，需填 <code>torch.finfo(dtype).min</code> 或 <code>-1e4</code>）。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §8 延伸阅读与 W01 打卡实战 ========== -->
+    <section>
+      <h2><span class="num">08</span>延伸阅读与 W01 第一张论文卡实战</h2>
+      <div class="callout source">
+        <span class="ct">今日立即兑现（仅需 20 分钟即可拿下一血！）</span>
+        <p>1. <strong>一手原文</strong>：S. Keshav, <em>How to Read a Paper</em>, ACM SIGCOMM Computer Communication Review, 2007（全文仅短短 2 页半英文，极其清爽易读！）。<br>
+        2. <strong>生成你的第 1 张略读卡</strong>：在终端运行：<br>
+        <code>python3 study.py paper how_to_read_a_paper --skim</code><br>
+        用 3 句话填好生成的 <code>papers/how_to_read_a_paper.md</code>，然后打开 <a href="../../../papers/READING_LIST.md"><code>papers/READING_LIST.md</code></a> 把第 10 行的复选框勾为 <code>[x]</code>——恭喜你，<strong>W01 专题全部 5 节课程至此圆满闭环！</strong></p>
+      </div>
+    </section>
+
+    <!-- LAB:NAV -->
+    <nav class="lab-nav"><a class="prev" href="0004-logsumexp-pytorch-mnist.html"><small>← 上一课</small>PyTorch 工业级对照：Log-Sum-Exp 防溢出与 nn.CrossEntropyLoss</a><a class="next" href="../../index.html#w01-自动微分与P1"><small>本课题最新一课</small>回到学习地图 · 说「继续」生成下一课</a></nav>
+    <!-- /LAB:NAV -->
+
+    <div class="ask-ai">💬 专题 1 全部五课已就绪！你可以直接说：<code>整理笔记</code>（生成 W01 可打印速查卡并归档术语）· <code>复习</code> · <code>练一下</code>（盲写挑战）· 或上传 PDF 开启 <code>论文陪读</code></div>
+    <footer class="lab-footer">生成于 2026-11-02 · lab-teach · 数值来自 Python 金标准（READING_LIST.md 实时解析校验）</footer>
+  </main>
+
+  <aside class="lab-margin"></aside>
+</div>
+
+<!-- LAB:GOLDEN -->
+<script type="application/json" id="lab-golden">{"total_papers": 30, "skim_count": 19, "deep_count": 11, "default_skim_hours": 9.5, "default_deep_hours": 22.0, "default_linear_hours": 120.0, "default_tiered_hours": 31.5, "default_saved_hours": 88.5, "default_saved_pct": 73.75, "default_linear_weeks": 48.0, "default_tiered_weeks": 12.6, "attn_dk64_std": 8.0, "_meta": {"script": "学习/w01-自动微分与P1/verify_0005.py", "python": "test", "generated": "2026-11-03"}}</script>
+<!-- /LAB:GOLDEN -->
+
+<script src="../../../.agents/skills/lab-teach/assets/lab.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-math.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-plot.js"></script>
+<script>
+Lab.ready(() => {
+  const N_SKIM = 19;
+  const N_DEEP = 11;
+  const N_TOTAL = N_SKIM + N_DEEP;
+
+  function calcBudget(tLinear, tSkim, tDeep, weekly) {
+    const linearHours = N_TOTAL * tLinear;
+    const skimHours = N_SKIM * tSkim;
+    const deepHours = N_DEEP * tDeep;
+    const tieredHours = skimHours + deepHours;
+    const savedHours = linearHours - tieredHours;
+    const savedPct = (savedHours / linearHours) * 100;
+    const linearWeeks = linearHours / weekly;
+    const tieredWeeks = tieredHours / weekly;
+    return { linearHours, skimHours, deepHours, tieredHours, savedHours, savedPct, linearWeeks, tieredWeeks };
+  }
+
+  // 1. 与 Python 金标准逐项对齐校验
+  const def = calcBudget(4.0, 0.5, 2.0, 2.5);
+  Lab.check("total_papers", N_TOTAL);
+  Lab.check("skim_count", N_SKIM);
+  Lab.check("deep_count", N_DEEP);
+  Lab.check("default_skim_hours", def.skimHours, undefined, { tol: 1e-6 });
+  Lab.check("default_deep_hours", def.deepHours, undefined, { tol: 1e-6 });
+  Lab.check("default_linear_hours", def.linearHours, undefined, { tol: 1e-6 });
+  Lab.check("default_tiered_hours", def.tieredHours, undefined, { tol: 1e-6, badge: "#sec-pg" });
+  Lab.check("default_saved_hours", def.savedHours, undefined, { tol: 1e-6 });
+  Lab.check("default_saved_pct", def.savedPct, undefined, { tol: 1e-6 });
+  Lab.check("default_tiered_weeks", def.tieredWeeks, undefined, { tol: 1e-6 });
+  Lab.check("attn_dk64_std", Math.sqrt(64), undefined, { tol: 1e-6, badge: "#sec-cases" });
+
+  // 2. §2 Keshav 三遍阅读法状态机图（与 #step-passes 联动）
+  const g = LabPlot.graph("#graph-passes", {
+    width: 706,
+    height: 252,
+    nodes: [
+      { id: "pdf",  label: "拿到新论文 PDF",     sub: "t = 0 min",          x: 74,  y: 126, w: 124, h: 48 },
+      { id: "p1",   label: "Pass 1 · 鸟瞰筛查",  sub: "5–10m · 答 5C 五问", x: 244, y: 126, w: 138, h: 50 },
+      { id: "drop", label: "果断止损淘汰",       sub: "~80% 无关/水文",     x: 244, y: 216, w: 132, h: 42 },
+      { id: "p2",   label: "Pass 2 · 抓主图骨架", sub: "30–45m · 跳过证明",  x: 444, y: 126, w: 146, h: 50 },
+      { id: "skim", label: "🟢 3句话略读卡",     sub: "19 篇到此打勾 ✓",    x: 444, y: 36,  w: 140, h: 44 },
+      { id: "p3",   label: "Pass 3 · 虚拟复现",  sub: "1.5–2h · 推公式看码", x: 628, y: 126, w: 138, h: 50 },
+      { id: "deep", label: "🔴 半页卡+20行源码", sub: "11 篇核心基石 ✓",    x: 628, y: 216, w: 142, h: 44 },
+    ],
+    edges: [
+      { from: "pdf", to: "p1" },
+      { from: "p1",  to: "drop", label: "无关/存疑", dx: 40, dy: 5 },
+      { from: "p1",  to: "p2",   label: "过筛" },
+      { from: "p2",  to: "skim", label: "19篇🟢",   dx: 36, dy: 5 },
+      { from: "p2",  to: "p3",   label: "11篇🔴" },
+      { from: "p3",  to: "deep", label: "手推+对码", dx: -42, dy: 5 },
+    ],
+  });
+
+  const passStates = [
+    {
+      highlight: ["p1", "drop"],
+      done: ["pdf"],
+      edges: [["pdf", "p1"], ["p1", "drop"]],
+    },
+    {
+      highlight: ["p2", "skim"],
+      done: ["pdf", "p1"],
+      edges: [["p1", "p2"], ["p2", "skim"]],
+    },
+    {
+      highlight: ["p3", "deep"],
+      done: ["pdf", "p1", "p2", "skim"],
+      edges: [["p2", "p3"], ["p3", "deep"]],
+    },
+  ];
+
+  Lab.onStep("#step-passes", (idx) => {
+    g.reset();
+    g.apply(passStates[idx] || passStates[0]);
+  });
+
+  // 3. §5 16 周 30 篇论文时间账本模拟器
+  Lab.playground("#pg-budget", {
+    title: "本仓 30 篇精选论文（19 篇 🟢 + 11 篇 🔴）时间账本与通关周期测算",
+    params: [
+      { name: "tLinear", label: "传统线性硬啃单篇耗时 (h)", min: 2.0, max: 8.0, step: 0.5, value: 4.0, fmt: (v) => v.toFixed(1) + "h" },
+      { name: "tSkim",   label: "Pass 2 🟢 略读单篇耗时 (h)", min: 0.25, max: 1.5, step: 0.05, value: 0.5, fmt: (v) => v.toFixed(2) + "h" },
+      { name: "tDeep",   label: "Pass 3 🔴 精读单篇耗时 (h)", min: 1.0, max: 4.0, step: 0.25, value: 2.0, fmt: (v) => v.toFixed(2) + "h" },
+      { name: "weekly",  label: "每周排定论文预算 (h/周)",   min: 1.0, max: 8.0, step: 0.25, value: 2.5, fmt: (v) => v.toFixed(2) + "h" },
+    ],
+    buttons: [
+      {
+        label: "重置本仓推荐配比 (0.5h / 2.0h / 每周2.5h)",
+        primary: true,
+        onClick: (_p, ctl) => { ctl.set("tLinear", 4.0); ctl.set("tSkim", 0.5); ctl.set("tDeep", 2.0); ctl.set("weekly", 2.5); },
+      },
+      {
+        label: "模拟完美主义陷阱 (篇篇精读 3.5h)",
+        onClick: (_p, ctl) => { ctl.set("tLinear", 4.0); ctl.set("tSkim", 3.5); ctl.set("tDeep", 3.5); ctl.set("weekly", 2.5); },
+      },
+      {
+        label: "冲刺加速模式 (每周 4.0h 预算)",
+        onClick: (_p, ctl) => { ctl.set("tLinear", 4.0); ctl.set("tSkim", 0.5); ctl.set("tDeep", 2.0); ctl.set("weekly", 4.0); },
+      },
+    ],
+    caption: "柱状图对比 30 篇论文在不同策略下的总工时分布（单位：小时）；高亮橙柱为三遍分级总耗时与省去写项目代码的净收益工时。",
+    render(p, out) {
+      out.innerHTML = '<div class="bars-host"></div>';
+      const b = calcBudget(p.tLinear, p.tSkim, p.tDeep, p.weekly);
+      const savedPos = Math.max(0, b.savedHours);
+
+      LabPlot.bars(
+        out.querySelector(".bars-host"),
+        [b.linearHours, b.tieredHours, b.skimHours, b.deepHours, savedPos],
+        {
+          labels: ["线性硬啃30篇", "三遍分级总计", "└ 19篇🟢略读", "└ 11篇🔴精读", "省下写码时间"],
+          highlight: [1, 4],
+          decimals: 1,
+          height: 270,
+        }
+      );
+
+      const finishBadge = b.tieredWeeks <= 16.0
+        ? `<span style="color:var(--c-lab)">${Lab.fmt(b.tieredWeeks, 2)} 周（✓ 16周内稳妥通关）</span>`
+        : `<span style="color:var(--c-warn)">${Lab.fmt(b.tieredWeeks, 2)} 周（⚠️ 超出16周路线图！）</span>`;
+
+      Lab.readout(out, {
+        "线性硬啃 30 篇总工时": `${Lab.fmt(b.linearHours, 1)} h（需 ${Lab.fmt(b.linearWeeks, 1)} 周）`,
+        "三遍分级法总工时": `${Lab.fmt(b.tieredHours, 1)} h（🟢${Lab.fmt(b.skimHours, 1)}h + 🔴${Lab.fmt(b.deepHours, 1)}h）`,
+        "省给代码/实验的时间": `${Lab.fmt(b.savedHours, 1)} h（${Lab.fmt(b.savedPct, 2)}%）`,
+        "按每周预算通关周期": finishBadge,
+      });
+    },
+  });
+});
+</script>
+</body>
+</html>

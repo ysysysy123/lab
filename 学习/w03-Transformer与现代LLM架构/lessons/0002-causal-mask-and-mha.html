@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>因果掩码（Causal Mask）与多头注意力（MHA）：防未来穿越与子空间并行 · w03-Transformer与现代LLM架构</title>
+<meta name="lab:topic" content="w03-Transformer与现代LLM架构">
+<meta name="lab:num" content="2">
+<meta name="lab:step" content="2">
+<meta name="lab:date" content="2026-11-01">
+<link rel="stylesheet" href="../../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body>
+<div class="lab-layout">
+  <nav id="lab-toc" aria-label="目录"></nav>
+
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../../index.html">📚 学习地图</a> / <a href="../../index.html#w03-Transformer与现代LLM架构">w03-Transformer与现代LLM架构</a> / 第 2 课</div>
+      <h1>因果掩码（Causal Mask）与多头注意力（MHA）：防未来穿越与子空间并行</h1>
+      <p class="subtitle">为什么掩码必须是 Softmax 之前的 $-\infty$ 而不能事后置零？把 $C$ 维切成 $H$ 个头为什么不增加哪怕 1 个参数？</p>
+      <div class="chips">
+        <span class="chip">⏱ 约 22 分钟</span>
+        <span class="chip">🧭 计划步骤 2 / 5</span>
+        <span class="chip">📅 2026-11-01</span>
+        <span class="chip">📓 02-多头注意力.ipynb · 09-MiniMind整体架构.ipynb</span>
+      </div>
+    </header>
+
+    <div class="win">
+      <div class="icon">🎯</div>
+      <div>
+        <h4>本课收获</h4>
+        <p>用 $4\times 4$ 算例算出「Pre-Softmax 加 $-\infty$」与「Post-Softmax 置零」在概率和与反向梯度上的本质差异，并能在白板上零卡顿盲写出 <code>(B, T, C) → view → transpose(1, 2) → SDPA → transpose(1, 2).contiguous().view → Wo</code> 全套多头重排代码。</p>
+      </div>
+    </div>
+
+    <div class="prereq">
+      <b>前置依赖：</b>
+      <span class="known">✓ 单头缩放点积自注意力 SDPA 与 Softmax 雅可比求导（本课题第 1 课）</span> ·
+      <span class="gap">△ PyTorch 张量内存步长 <code>stride</code> 与 <code>contiguous()</code>（本课 §3 结合维度交换一次讲清）</span>
+    </div>
+
+    <!-- ========== §1 痛点与直觉 ========== -->
+    <section>
+      <h2><span class="num">01</span>痛点与直觉：从单头玩具走向真正 GPT 的两道关卡</h2>
+      <p>第 1 课的单头自注意力已经能让任意两个词一步直连，但要把它装进 GPT / LLaMA / Qwen 这样的现代大语言模型，立刻会撞上两个致命问题：</p>
+
+      <aside class="sidenote">
+        <b>Encoder vs Decoder</b>：BERT 这类双向理解模型做完形填空，不需要因果掩码（双向全可见）；而所有生成式大模型（GPT、LLaMA、Qwen、MiniMind）全都是 <strong>Decoder-only 自回归架构</strong>，因果掩码是它们的生命线。
+      </aside>
+
+      <div class="callout warn">
+        <span class="ct">关卡一：并行训练时的「未来答案偷看」灾难（Causal Mask）</span>
+        <p>大语言模型的预训练目标是 <strong>Next-Token Prediction（预测下一个词）</strong>。为了榨干 GPU 算力，训练时我们不会一个词一个词串行喂，而是把整句 <code>["我", "爱", "深", "度"]</code> 一次性并行送进网络，同时让位置 0 预测「爱」、位置 1 预测「深」、位置 2 预测「度」。<br>
+        如果不加限制，第 0 个词「我」的 Query 在算 $QK^\top$ 时就能直接看到右边第 1 个词「爱」的 Key 和 Value！模型根本不用学语言规律，直接把右邻居抄过来就能让训练 Loss 秒降为 $0$；可一旦上考场做真实推理（右边还没有生成出来！），模型瞬间变成睁眼瞎胡言乱语。</p>
+      </div>
+
+      <div class="callout intuition">
+        <span class="ct">关卡二：单组 Softmax 的「赢家通吃」瓶颈（Multi-Head Attention）</span>
+        <p>在单头注意力里，每个词只有<strong>唯一一组</strong>和为 $1.0$ 的概率分布。指数函数具有强烈的「赢家通吃」特性——比如代词「它」可能把 $85\%$ 的权重都花在了找指代对象上，就再也腾不出注意力去同时盯住「谓语动词时态」和「相邻介词搭配」。<br>
+        <strong>多头注意力（MHA）的妙招</strong>：不增加总维度，直接把长 $C$ 的特征向量均切成 $H$ 份独立低维子空间（每头维度 $d_k = C / H$），让 $H$ 个头各自拥有一套独立的 Softmax 账本并行打分——头 1 盯主谓语法、头 2 盯指代消解、头 3 盯局部词组，最后拼接过一层 $W_O$ 汇总，<strong>表达能力翻倍，总参数量和总计算量却与单头 $C$ 维分毫不差！</strong></p>
+      </div>
+    </section>
+
+    <!-- ========== §2 因果掩码数学铁律 ========== -->
+    <section>
+      <h2><span class="num">02</span>因果掩码铁律：为什么必须填 $-\infty$ 且在 Softmax 之前？</h2>
+      <p>初学者手撕因果注意力时，最容易写出的一个致命 Bug 是：「先算完正常的 $\text{Softmax}(QK^\top / \sqrt{d_k})$，再乘一个下三角全 1、上三角全 0 的掩码矩阵把未来权重抹成 0」。<strong>这在数学和梯度上都是大错特错的！</strong></p>
+      <p>我们直接拿 $T=4$ 句子 <code>["我", "爱", "深", "度"]</code> 的缩放后分数矩阵 $S \in \mathbb{R}^{4\times 4}$ 来算一笔硬账（行 $i$ 为当前提问位置，列 $j$ 为被看位置，$j &gt; i$ 的右上三角即为「未来」）：</p>
+      <p>$$S = \begin{pmatrix} 1.0 & \color{#c2410c}{2.0} & \color{#c2410c}{0.5} & \color{#c2410c}{-0.5} \\ 0.8 & 1.2 & \color{#c2410c}{2.4} & \color{#c2410c}{0.2} \\ 0.4 & 1.0 & 1.5 & \color{#c2410c}{2.2} \\ 0.6 & 0.9 & 1.4 & 1.8 \end{pmatrix}$$</p>
+
+      <div class="lab-stepper" id="step-mask" data-title="T = 4 因果掩码正面对比：Pre-Softmax (-∞) vs Post-Softmax (×0)" data-mode="accumulate">
+        <div class="step" data-title="✅ 正确做法：在 Softmax 之前把上三角 j > i 置为 -∞">
+          <p>构造上三角掩码矩阵 $M_{ij} = 0\ (i \ge j),\ M_{ij} = -\infty\ (i &lt; j)$，相加得 $S + M$，再按行做 Softmax。因为 $\exp(-\infty) = 0$，<strong>每一行的归一化分母只累加合法历史 $j \le i$</strong>：</p>
+          <ul>
+            <li><strong>第 0 行（「我」，只能看自己）</strong>：输入 $[1.0, -\infty, -\infty, -\infty] \implies \frac{e^{1.0}}{e^{1.0} + 0 + 0 + 0} = [\mathbf{1.0000},\ 0,\ 0,\ 0]$（行和 $= 1.0$）。</li>
+            <li><strong>第 1 行（「爱」，可看「我、爱」）</strong>：输入 $[0.8, 1.2, -\infty, -\infty] \implies \frac{[e^{0.8}, e^{1.2}]}{e^{0.8}+e^{1.2}} \approx [\mathbf{0.4013},\ \mathbf{0.5987},\ 0,\ 0]$（行和 $= 1.0$）。</li>
+          </ul>
+        </div>
+        <div class="step" data-title="❌ 错误做法：先对全行做 Softmax，再乘下三角 0/1 掩码">
+          <p>若先对未遮挡的第 0 行 $[1.0, 2.0, 0.5, -0.5]$ 做 Softmax：</p>
+          <p>$$A_{\text{full}}[0] = \frac{[e^{1.0},\ e^{2.0},\ e^{0.5},\ e^{-0.5}]}{2.7183 + \color{#c2410c}{7.3891 + 1.6487 + 0.6065}} \approx [0.2199,\ \color{#c2410c}{0.5977,\ 0.1334,\ 0.0491}]$$</p>
+          <p>事后再乘 $[1, 0, 0, 0]$ 抹零，得到 $A_{\text{post}}[0] = [\mathbf{0.2199},\ 0,\ 0,\ 0]$！灾难发生了两重：<br>
+          ① <strong>概率分布崩塌</strong>：第 0 行权重之和只剩 $0.2199$（丢掉了 $78\%$ 的特征幅值！第 1 行也只剩 $0.3117$）；<br>
+          ② <strong>未来信息经由分母幽灵穿越 + 反向梯度污染</strong>：为什么唯一合法的 $A_{\text{post}}[0,0]$ 会等于 $0.2199$？因为分母里加了未来词「爱」的 $e^{s_{01}} = e^{2.0}$！如果未来换一个词使 $s_{01}$ 变大，$A_{\text{post}}[0,0]$ 就会跟着变小——模型照样能通过这个缩放比例反推出未来是什么词！用 PyTorch 求导更能实锤：此时未来分数竟有非零梯度 $\frac{\partial A_{\text{post}}[0,0]}{\partial s_{01}} = -A_{\text{full}}[0,0]A_{\text{full}}[0,1] = \mathbf{-0.1314} \neq 0$！</p>
+        </div>
+        <div class="step" data-title="⚠️ 工程混合精度防坑：为什么 FP16 下填 -1e9 会直接崩溃？">
+          <p>很多老教程喜欢写 <code>scores.masked_fill(mask, -1e9)</code>。这在 FP32 和 BF16（8 位指数，上限 $\sim 3.4\times 10^{38}$）下没问题，但一旦放到 <strong>FP16（如 Colab T4 开启 <code>fp16=True</code>，5 位指数最大只能表示 $\pm 65504$）</strong>，直接抛异常：<code>RuntimeError: value cannot be converted to type at::Half without overflow</code>！</p>
+          <p>工业级标准写法永远只有两种：直接填 IEEE 负无穷 <code>float("-inf")</code>，或自适应类型极小值 <code>torch.finfo(scores.dtype).min</code>。</p>
+        </div>
+      </div>
+
+      <div class="eq-explain">
+        <span class="eq-tag">(因果自注意力公式)</span>
+        <p>$$\text{CausalAttention}(Q, K, V) = \text{Softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}} + M\right)V, \qquad M_{ij} = \begin{cases} 0, & j \le i \\ -\infty, & j &gt; i \end{cases}$$</p>
+        <dl>
+          <dt>$i, j \in \{0, \dots, T-1\}$</dt><dd>行号 $i$ 为当前生成步 Query 位置，列号 $j$ 为历史/未来 Key 位置</dd>
+          <dt>$j &gt; i$（严格上三角）</dt><dd>对应 `torch.triu(..., diagonal=1)`（注意对角线 $j=i$ 必须保留为 $0$，否则第 0 行全为 $-\infty$ 会算出 $0/0 = \text{NaN}$！）</dd>
+        </dl>
+      </div>
+    </section>
+
+    <!-- ========== §3 多头注意力 Shape 变形记 ========== -->
+    <section>
+      <h2><span class="num">03</span>多头注意力（MHA）全链路 Shape 变形记</h2>
+      <p>手撕 MHA 时，90% 的同学不是挂在注意力公式，而是挂在 <code>view</code> 和 <code>transpose</code> 的维度顺序上。记住我们的配置约定：总隐藏维 $C = H \times d_k$（例如 $C = 512,\ H = 8 \implies d_k = 64$）。</p>
+
+      <div class="lab-figure">
+        <div id="graph-mha"></div>
+        <figcaption>多头注意力 6 步张量流转图：核心在于两次 <code>transpose(1, 2)</code> 把头维度 $H$ 借调到批次维旁做并行，算完再归位融合。</figcaption>
+      </div>
+
+      <table class="shape">
+        <tr><th>阶段与 PyTorch 操作</th><th>张量 Shape</th><th>设计意图与手撕必考追问</th></tr>
+        <tr><td>0. 输入序列 <code>x</code></td><td>(B, T, C)</td><td>批次 $B$，序列长 $T$，通道维 $C = d_{\text{model}}$</td></tr>
+        <tr><td>1. 三路整块投影 <code>wq(x), wk(x), wv(x)</code></td><td>(B, T, C)</td><td>不用写 $H$ 个小 Linear 循环！直接用大矩阵 $(C, C)$ 一次算出所有头的拼接态</td></tr>
+        <tr><td>2. 切分子空间 <code>.view(B, T, H, d_k)</code></td><td>(B, T, H, d_k)</td><td>零拷贝重解释最后一维 $C \to (H, d_k)$，词序 $T$ 仍在第 1 维</td></tr>
+        <tr><td>3. 轴交换 <code>.transpose(1, 2)</code></td><td>(B, H, T, d_k)</td><td><strong>灵魂一步！</strong>把 $(B, H)$ 放到前两维当联合 Batch，最后两维留给 $(T, d_k)$</td></tr>
+        <tr><td>4. 并行打分 <code>q @ k.transpose(-2, -1)</code></td><td>(B, H, T, T)</td><td>GPU 一次性并行算出 $B \times H$ 张独立的 $T \times T$ 注意力矩阵！</td></tr>
+        <tr><td>5. 加权聚合 <code>attn @ v</code></td><td>(B, H, T, d_k)</td><td>每个头在各自 $d_k$ 子空间内独立聚合完 Value</td></tr>
+        <tr><td>6. 拼回多头 <code>.transpose(1, 2).contiguous().view(B, T, C)</code></td><td>(B, T, C)</td><td>先把轴换回 <code>(B, T, H, d_k)</code>，重排连续内存后展平回 $C$ 维</td></tr>
+        <tr><td>7. 跨头融合 <code>wo(merged)</code></td><td>(B, T, C)</td><td>右乘 $W_O \in \mathbb{R}^{C \times C}$，让 $H$ 个头提取的不同关系充分交叉混合</td></tr>
+      </table>
+
+      <div class="callout principle">
+        <span class="ct">手撕面试官最爱追问的两个细节（务必脱口而出！）</span>
+        <p><strong>追问 A：第 3 步如果不做 <code>transpose(1, 2)</code> 直接矩阵乘会发生什么？</strong><br>
+        PyTorch 的 <code>@</code> 只在<strong>最后两维</strong>做矩阵乘，前面所有维度按 Batch 对齐。如果不交换，张量是 <code>(B, T, H, d_k)</code>，执行 <code>q @ k.transpose(-2, -1)</code> 会变成对每个词位置算 <code>(H, d_k) @ (d_k, H) → (H, H)</code>（头与头算内积！），彻底背离词与词交互 <code>(T, T)</code> 的物理意义！</p>
+        <p><strong>追问 B：第 6 步为什么 <code>transpose(1, 2)</code> 后面必须紧跟 <code>.contiguous()</code> 才能调 <code>.view()</code>？</strong><br>
+        <code>transpose</code> 为了省时间只修改了张量头部的步长元数据（<code>stride</code>），物理显存里的元素依然按 <code>(B, H, T, d_k)</code> 排列（内存不连续）。而 <code>.view(B, T, C)</code> 要求底层物理地址严格连续才能零拷贝合并最后两维，否则直接抛 <code>RuntimeError: view size is not compatible with input tensor's size and stride</code>！加上 <code>.contiguous()</code>（或直接用自动按需拷贝的 <code>.reshape(B, T, C)</code>）即可安全过关。</p>
+      </div>
+    </section>
+
+    <!-- ========== §4 代码讲解 ========== -->
+    <section>
+      <h2><span class="num">04</span>代码讲解：PyTorch 黄金 14 行手撕模板与因果掩码</h2>
+      <p>左侧截取自 <code>11-Attention与Transformer从零实现.ipynb · Cell#9</code> 的标准 PyTorch 多头实现（已与官方 <code>nn.MultiheadAttention</code> 逐位对齐误差 $&lt; 10^{-7}$）：</p>
+
+      <div class="code-walk" data-dim>
+<pre data-file="../03-深度学习/模型笔记/11-Attention与Transformer从零实现.ipynb · Cell#9" data-start="3"><code class="language-python">class MHA_manual(nn.Module):
+    def __init__(self, d, heads):
+        super().__init__()
+        self.d, self.h = d, heads
+        self.dh = d // heads
+        self.wq = nn.Linear(d, d); self.wk = nn.Linear(d, d)
+        self.wv = nn.Linear(d, d); self.out = nn.Linear(d, d)
+    def forward(self, x):
+        B, T, _ = x.shape
+        q = self.wq(x).view(B, T, self.h, self.dh).transpose(1, 2)
+        k = self.wk(x).view(B, T, self.h, self.dh).transpose(1, 2)
+        v = self.wv(x).view(B, T, self.h, self.dh).transpose(1, 2)
+        a = torch.softmax(q @ k.transpose(-2, -1) / (self.dh ** 0.5), dim=-1) @ v
+        return self.out(a.transpose(1, 2).reshape(B, T, self.d))</code></pre>
+        <ol class="walk">
+          <li data-lines="5-9"><strong>四块 $(d, d)$ 权重矩阵</strong>：<code>d</code> 必须整除 <code>heads</code>，单头维 <code>dh = d // heads</code>；<code>wq, wk, wv, out</code> 共 $4d^2$ 参数（現代 LLM 常设 <code>bias=False</code>）。</li>
+          <li data-lines="12-14"><strong>投影 + 切头 + 换轴三连</strong>：<code>(B, T, d) → (B, T, h, dh) → (B, h, T, dh)</code>，一步让所有头进入并行轨道。</li>
+          <li data-lines="15"><strong>单头维度缩放</strong>：注意这里除以的是<strong>单头维度</strong> $\sqrt{d_h} = \sqrt{d / h}$，而不是总维度 $\sqrt{d}$！因为每个内积只累加了 $d_h$ 项。</li>
+          <li data-lines="16"><strong>归位拼接 + $W_O$ 跨头融合</strong>：<code>.reshape(B, T, self.d)</code> 等价于 <code>.contiguous().view(B, T, self.d)</code>；最后经 <code>self.out</code> 完成多子空间信息交互。</li>
+        </ol>
+      </div>
+
+      <h3>三种必会因果掩码代码对照（训练全量 vs 推理 KV Cache）</h3>
+      <div class="lab-tabs">
+        <div class="tab" data-label="① PyTorch 训练标准写法 (triu -inf)">
+<pre data-file="../03-深度学习/模型笔记/11-Attention与Transformer从零实现.ipynb · Cell#10" data-start="1"><code class="language-python"># ---------- 实验 3：因果掩码（Decoder 只看左侧） ----------
+# 掩码放入 softmax 前：下三角保留，上三角填 -inf → softmax 后为 0
+def causal_mask(T):
+    return torch.triu(torch.full((T, T), float('-inf')), diagonal=1)
+
+T = 5</code></pre>
+        </div>
+        <div class="tab" data-label="② MiniMind 支持 KV Cache 的通用掩码">
+<pre data-file="../04-LLM大模型/教学/09-MiniMind整体架构.ipynb · Cell#15" data-start="1"><code class="language-python">def causal_mask(nq, nk):
+    """因果掩码：query 全局位置 = nk-nq+i，屏蔽 j &gt; 自己全局位置（未来 key）。
+    全量时 nq=nk=8 退化为上三角；增量 decode 时 nk=缓存长度 &gt; nq。"""
+    i = np.arange(nq)[:, None]; j = np.arange(nk)[None, :]
+    return (nk - nq + i) &lt; j</code></pre>
+        </div>
+        <div class="tab" data-label="③ NumPy 五步显式分头教学版">
+<pre data-file="../04-LLM大模型/教学/02-多头注意力.ipynb · Cell#8" data-start="63"><code class="language-python">    B, T, d_model = x.shape
+
+    # ========== 步骤①：QKV线性投影 ==========
+    # 输入x[B,T,d_model] 乘权重 + 偏置，得到完整维度的Q、K、V，shape均为 [B, T, d_model]
+    Q = x @ W_q + b_q
+    K = x @ W_k + b_k
+    V = x @ W_v + b_v
+
+    # ========== 步骤②：拆分多头 reshape + transpose ==========
+    # reshape(B, T, h, d_k): 在特征维度d_model拆成 h个头 × 单头维度d_k；T（token数量）不变，所有头看到全部token
+    # transpose(0, 2, 1, 3): 调换维度顺序：[B,T,h,dk] → [B,h,T,dk]
+    # 维度含义 [batch, head, token, feature]，把头放到第二维，方便循环遍历每一个头
+    Q = Q.reshape(B, T, h, d_k).transpose(0, 2, 1, 3)
+    K = K.reshape(B, T, h, d_k).transpose(0, 2, 1, 3)
+    V = V.reshape(B, T, h, d_k).transpose(0, 2, 1, 3)
+
+    # ========== 步骤③：逐个头，独立运行缩放点积注意力 ==========
+    attn_all = np.zeros((B, h, T, T))   # 存放每一个头的注意力权重矩阵
+    heads = []                          # 存放每个头的输出，每个元素shape [B,T,d_k]
+    for i in range(h):
+        # Q[:,i]取出第i个头的Q/K/V，shape [B,T,d_k]
+        out_i, attn_i = scaled_dot_attention(Q[:, i], K[:, i], V[:, i], mask)
+        heads.append(out_i)
+        attn_all[:, i] = attn_i
+
+    # ========== 步骤④：拼接所有头输出 ==========
+    # 沿最后一维（特征维度）拼接h个头输出
+    # concat shape: [B, T, h*d_k] = [B, T, d_model]，恢复原始模型隐层维度
+    concat = np.concatenate(heads, axis=-1)
+    
+    # ========== 步骤⑤：输出线性投影 W_o ==========
+    out = concat @ W_o + b_o  # [B,T,d_model]</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== §5 交互实验 ========== -->
+    <section>
+      <h2 id="sec-pg"><span class="num">05</span>交互实验：抓捕「未来信息穿越」现场</h2>
+      <p>在 $4\times 4$ 句子 <code>["我", "爱", "深", "度"]</code> 上切换三种掩码模式，并拖动滑块改变未来词「爱」对首词「我」的诱惑打分扰动 $\Delta s_{0,1}$（即把 $S_{0,1} = 2.0 + \Delta s_{0,1}$ 调大或调小），观察右侧权重矩阵与梯度泄露读数：</p>
+
+      <div id="pg-mask"></div>
+
+      <p class="small muted">💡 <strong>破案实验指引</strong>：① 在默认<strong>「✅ Pre-Softmax 加 −∞」</strong>下来回拖动 $\Delta s_{0,1}$ 滑块——无论未来词打分怎么变，右侧注意力矩阵<strong>纹丝不动</strong>，未来梯度敏感度严格为 <code>0</code>！② 切到<strong>「❌ 错误：先 Softmax 再置零」</strong>后再拖动 $\Delta s_{0,1}$——虽然右上角看似全是 <code>0.000</code>，但左上角 <code>A[0,0]</code> 的数值竟然跟着未来词剧烈跳动！这就是「通过归一化分母穿越泄密」的铁证。</p>
+    </section>
+
+    <!-- ========== §6 小结 ========== -->
+    <section>
+      <h2><span class="num">06</span>小结与面试表达模板</h2>
+      <div class="callout summary">
+        <span class="ct">本课核心四条</span>
+        <ul>
+          <li><strong>因果掩码铁律</strong>：必须在 Softmax <strong>之前</strong>将上三角 $j &gt; i$ 置为 $-\infty$（工程用 <code>float("-inf")</code> 或 <code>torch.finfo(dtype).min</code>），使 $\exp(-\infty)=0$ 且分母仅对合法历史归一化。</li>
+          <li><strong>事后置零两大罪状</strong>：一破坏每行概率和为 $1$ 的凸组合性质；二让未来分数混入 Softmax 分母，前向泄露信息、反向对未来 Token 产生非零梯度 $-p_{ii}p_{ij}$。</li>
+          <li><strong>多头零额外开销</strong>：将 $C$ 维切为 $H$ 个 $d_k = C/H$ 子空间，四块投影矩阵总参数量仍为 $4C^2$，注意力核心计算量仍为 $O(B T^2 C)$。</li>
+          <li><strong>手撕重排口诀</strong>：<code>view(B,T,H,d_k).transpose(1,2)</code> 借轴并行 → 除 $\sqrt{d_k}$ 算因果注意力 → <code>transpose(1,2).contiguous().view(B,T,C)</code> 归位 → 乘 <code>Wo</code> 跨头融合。</li>
+        </ul>
+      </div>
+
+      <div class="callout interview">
+        <span class="ct">30 秒面试高分回答模板</span>
+        <p>「GPT 类自回归模型训练时整句并行输入，因果掩码在 Softmax 前把上三角 $j&gt;i$ 加上 $-\infty$，保证 $\exp(-\infty)=0$，既屏蔽未来权重又确保历史位置概率和严格为 1；如果先 Softmax 再乘 0/1 掩码，未来词已经参与了分母求和，会导致特征幅值缩水且反向传播向未来词泄露梯度。多头注意力则把 $C$ 维切成 $H$ 个 $d_k=C/H$ 的低维子空间，通过 <code>transpose(1, 2)</code> 把头维提到前面批量并行，让不同头同时捕捉语法、指代和局部搭配等多种关系，最后拼接经 $W_O$ 融合，总参数量依然保持 $4C^2$ 不变。」</p>
+      </div>
+    </section>
+
+    <!-- ========== §7 折叠自测与面试三层追问 ========== -->
+    <section>
+      <h2><span class="num">07</span>想检验一下？（可选 · 点击展开）</h2>
+      <details class="reveal q">
+        <summary>1. 🎤 面试追问：多头注意力有 $H$ 个头，为什么总参数量是 $4C^2$ 而不是 $4 H C^2$？（以 $C=512,\ H=8$ 算具体数字）</summary>
+        <div>
+          <p>每个头的投影矩阵并不是从 $C$ 投到 $C$，而是从 $C$ 投到单头低维 $d_k = C / H$！即单头的 $W_i^Q \in \mathbb{R}^{C \times (C/H)}$ 参数量是 $C^2 / H$。把 $H$ 个头的 $W_1^Q, \dots, W_H^Q$ 横向拼在一起，恰好合成一整块 $W_Q \in \mathbb{R}^{C \times C}$，参数量为 $H \times \frac{C^2}{H} = C^2$。加上同样大小的 $W_K, W_V$ 以及最后的融合矩阵 $W_O \in \mathbb{R}^{C \times C}$（不计偏置），总参数量恒为 <strong>$4C^2$</strong>。<br>
+          代入 $C = 512,\ H = 8$：$d_k = 64$，总参数量 $= 4 \times 512^2 = \mathbf{1,048,576}$（约 $1.05\text{M}$），与 $H$ 取 $1, 8, 16$ 完全无关！</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>2. 🎤 面试追问：在 Colab T4 上开启 <code>fp16=True</code> 训练时，写 <code>scores.masked_fill(mask, -1e9)</code> 为什么直接报错崩溃？叠加 Padding Mask 时又为什么会冒出 <code>NaN</code>？</summary>
+        <div>
+          <p>两个经典线上事故：<br>
+          ① <strong>FP16 溢出崩溃</strong>：IEEE 754 半精度浮点数（FP16）只有 5 位指数位，可表示的最大有限范围是 $\pm 65504$，<code>-1e9</code> 远超范围直接触发 <code>RuntimeError: value cannot be converted to type at::Half without overflow</code>。应改用 <code>float("-inf")</code>、<code>-1e4</code> 或 <code>torch.finfo(scores.dtype).min</code>（在 PyTorch 2.x 中更推荐直接调 <code>F.scaled_dot_product_attention(..., is_causal=True)</code>）。<br>
+          ② <strong>全行 $-\infty$ 导致 <code>0/0 = NaN</code></strong>：当左填充（Left Padding）或某些样本整行 Key 全被 Padding + Causal Mask 置为 $-\infty$ 时，行最大值 $m = -\infty$，<code>x - m</code> 变成 <code>(-inf) - (-inf) = NaN</code>（或分子分母全 0 得 <code>0/0 = NaN</code>）！因此对纯 Padding 废词位置，要么保证至少对角线自身可见，要么在 Loss 处用 <code>ignore_index=-100</code> 屏蔽。</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>3. 🎤 面试追问：开启 KV Cache 做自回归逐词生成（Decode 阶段）时，每次输入的 Query 长度 $T_q = 1$、缓存 Key 长度 $T_k = 100$，这时还需要加因果掩码吗？</summary>
+        <div>
+          <p><strong>单条无 Padding 序列在 Decode 阶段完全不需要加因果掩码！</strong><br>
+          原因很简单：Prefill（预填充提示词）阶段 $T_q = T_k$，前面的词不能看后面的词，必须加 $T_q \times T_q$ 上三角掩码；而进入逐词 Decode 阶段后，当前送进去的唯一 1 个 Query 就是全场最新的第 $100$ 号位置，KV Cache 里存的 $0 \sim 99$ 号位置 + 当前第 $100$ 号位置<strong>全部都是它的合法过去与自身</strong>（对应 §4 Tab ② 公式 <code>(nk - nq + i) &lt; j</code> 中 <code>nq=1, i=0</code>，条件 <code>nk - 1 &lt; j</code> 对所有 $j \in [0, nk-1]$ 恒为 <code>False</code>）！省掉掩码还能让底层直接跑更轻量的矩阵向量乘（GEMV）解码内核。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §8 延伸阅读 ========== -->
+    <section>
+      <h2><span class="num">08</span>延伸阅读与对照源码</h2>
+      <div class="callout source">
+        <span class="ct">一手参考资料</span>
+        <p>1. <strong>上层课程 Notebook</strong>：<code>../04-LLM大模型/教学/02-多头注意力.ipynb</code>（含 8 组权重梯度的完整手搓与 <code>in_proj_weight</code> 对齐细节）及 <code>../04-LLM大模型/教学/09-MiniMind整体架构.ipynb</code> Cell#12–15。<br>
+        2. <strong>本课金标准验证脚本</strong>：<a href="../verify_0002.py"><code>verify_0002.py</code></a>（含未来分数穿越梯度 <code>autograd</code> 验证与 PyTorch <code>nn.MultiheadAttention</code> 逐位比对）。</p>
+      </div>
+    </section>
+
+    <!-- LAB:NAV -->
+    <nav class="lab-nav"><a class="prev" href="0001-scaled-dot-product-attention.html"><small>← 上一课</small>缩放点积自注意力（SDPA）：QKᵀ / √d_k 方差推导与软检索直觉</a><a class="next" href="0003-rope-rotary-position-embedding.html"><small>下一课 →</small>旋转位置编码（RoPE）：复数平面旋转与相对位置内积不变性</a></nav>
+    <!-- /LAB:NAV -->
+
+    <div class="ask-ai">💬 哪里想再深挖？直接对 AI 助教说：<code>继续</code>（进入第 3 课：RoPE 旋转位置编码）· <code>详细推导</code> · <code>讲解代码</code> · <code>可视化</code> · <code>练一下</code></div>
+    <footer class="lab-footer">生成于 2026-11-01 · lab-teach · 数值经 NumPy + PyTorch autograd / nn.MultiheadAttention 金标准校验</footer>
+  </main>
+
+  <aside class="lab-margin"></aside>
+</div>
+
+<!-- LAB:GOLDEN -->
+<script type="application/json" id="lab-golden">{"S": [[1.0, 2.0, 0.5, -0.5], [0.8, 1.2, 2.4, 0.2], [0.4, 1.0, 1.5, 2.2], [0.6, 0.9, 1.4, 1.8]], "A_causal": [[1.0, 0.0, 0.0, 0.0], [0.40131234, 0.59868766, 0.0, 0.0], [0.17163596, 0.31274111, 0.51562293, 0.0], [0.12665416, 0.17096523, 0.28187401, 0.42050661]], "A_post": [[0.21987964, 0.0, 0.0, 0.0], [0.125099, 0.18662578, 0.0, 0.0], [0.08420392, 0.15342954, 0.25296254, 0.0], [0.12665416, 0.17096523, 0.28187401, 0.42050661]], "A_full": [[0.21987964, 0.59769483, 0.13336374, 0.04906178], [0.125099, 0.18662578, 0.61961942, 0.06865579], [0.08420392, 0.15342954, 0.25296254, 0.509404], [0.12665416, 0.17096523, 0.28187401, 0.42050661]], "causal_row_sums": [1.0, 1.0, 1.0, 1.0], "post_row_sums": [0.21987964, 0.31172479, 0.490596, 1.0], "causal_a00": 1.0, "causal_a10": 0.40131234, "causal_a11": 0.59868766, "post_a00": 0.21987964, "post_row1_sum": 0.31172479, "full_future_leak_sum": 1.97779957, "grad_causal_future_01": 0.0, "grad_post_future_01": -0.13142093, "mha_params_c512": 1048576, "_meta": {"script": "学习/w03-Transformer与现代LLM架构/verify_0002.py", "python": "test", "generated": "2026-11-03"}}</script>
+<!-- /LAB:GOLDEN -->
+
+<script src="../../../.agents/skills/lab-teach/assets/lab.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-math.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-plot.js"></script>
+<script>
+Lab.ready(() => {
+  const M = LabMath;
+  const words = ["我", "爱", "深", "度"];
+  const S0 = [
+    [1.0, 2.0, 0.5, -0.5],
+    [0.8, 1.2, 2.4, 0.2],
+    [0.4, 1.0, 1.5, 2.2],
+    [0.6, 0.9, 1.4, 1.8],
+  ];
+
+  function evalMaskMode(mode, deltaS01 = 0) {
+    const S = S0.map((r) => r.slice());
+    S[0][1] += deltaS01;
+
+    const fullA = M.softmaxRows(S);
+    if (mode === "causal") {
+      const sMasked = M.causalMask(S);
+      const attn = M.softmaxRows(sMasked);
+      const rowSums = attn.map((r) => M.sum(r));
+      return {
+        sDisp: sMasked,
+        attn,
+        rowSums,
+        futureWeightSum: 0.0,
+        gradS01: 0.0,
+      };
+    } else if (mode === "post_zero") {
+      const attn = fullA.map((r, i) => r.map((v, j) => (j > i ? 0 : v)));
+      const rowSums = attn.map((r) => M.sum(r));
+      // ∂A_post[0,0] / ∂S[0,1] = -A_full[0,0] * A_full[0,1]
+      const gradS01 = -fullA[0][0] * fullA[0][1];
+      return {
+        sDisp: S,
+        attn,
+        rowSums,
+        futureWeightSum: 0.0,
+        gradS01,
+      };
+    } else {
+      let leak = 0;
+      for (let i = 0; i < 4; i++) for (let j = i + 1; j < 4; j++) leak += fullA[i][j];
+      return {
+        sDisp: S,
+        attn: fullA,
+        rowSums: fullA.map((r) => M.sum(r)),
+        futureWeightSum: leak,
+        gradS01: -fullA[0][0] * fullA[0][1],
+      };
+    }
+  }
+
+  // 与 Python 金标准逐项对齐（9 项校验）
+  const c0 = evalMaskMode("causal", 0);
+  const p0 = evalMaskMode("post_zero", 0);
+  const f0 = evalMaskMode("full", 0);
+
+  Lab.check("causal_a00", c0.attn[0][0], undefined, { tol: 1e-7 });
+  Lab.check("causal_a10", c0.attn[1][0], undefined, { tol: 1e-7 });
+  Lab.check("causal_a11", c0.attn[1][1], undefined, { tol: 1e-7 });
+  Lab.check("post_a00", p0.attn[0][0], undefined, { tol: 1e-7 });
+  Lab.check("post_row1_sum", p0.rowSums[1], undefined, { tol: 1e-7 });
+  Lab.check("full_future_leak_sum", f0.futureWeightSum, undefined, { tol: 1e-7 });
+  Lab.check("grad_causal_future_01", c0.gradS01, undefined, { tol: 1e-7 });
+  Lab.check("grad_post_future_01", p0.gradS01, undefined, { tol: 1e-7, badge: "#sec-pg" });
+  Lab.check("mha_params_c512", 4 * 512 * 512);
+
+  // 1. §3 MHA 张量形状流转计算图
+  LabPlot.graph("#graph-mha", {
+    width: 700,
+    height: 195,
+    nodes: [
+      { id: "x",    label: "输入 X",         sub: "(B, T, C)",       x: 62,  y: 98, w: 98,  h: 48 },
+      { id: "proj", label: "Wq / Wk / Wv",  sub: "(B, T, C)",       x: 192, y: 98, w: 112, h: 48 },
+      { id: "tr1",  label: "view + T(1,2)", sub: "(B, H, T, d_k)",  x: 332, y: 98, w: 122, h: 48 },
+      { id: "sdpa", label: "Causal SDPA",   sub: "(B, H, T, d_k)",  x: 472, y: 98, w: 118, h: 48 },
+      { id: "tr2",  label: "T(1,2) + view", sub: "(B, T, C)",       x: 616, y: 50, w: 126, h: 44 },
+      { id: "wo",   label: "融合投影 Wo",     sub: "(B, T, C)",       x: 616, y: 146, w: 126, h: 44 },
+    ],
+    edges: [
+      { from: "x", to: "proj" },
+      { from: "proj", to: "tr1", label: "C=H·d_k" },
+      { from: "tr1", to: "sdpa", label: "(T,T)" },
+      { from: "sdpa", to: "tr2", label: "contiguous" },
+      { from: "tr2", to: "wo" },
+    ],
+  }).highlight(["tr1", "sdpa"]);
+
+  // 2. §5 三种掩码模式交互对比实验台
+  const syncSelect = (rootSel, idx, val) => {
+    const sels = document.querySelectorAll(rootSel + " select");
+    if (sels[idx]) sels[idx].value = val;
+  };
+
+  Lab.playground("#pg-mask", {
+    title: "4×4 句子「我 · 爱 · 深 · 度」三种掩码机制与未来信息穿越检验",
+    params: [
+      { name: "ds01", label: "未来词打分扰动 $\\Delta s_{0,1}$", min: -2.0, max: 3.0, step: 0.1, value: 0.0 },
+    ],
+    selects: [
+      {
+        name: "mode",
+        label: "掩码注入方式",
+        options: [
+          ["causal", "✅ 正确：Pre-Softmax 加 −∞（标准因果注意力）"],
+          ["post_zero", "❌ 错误：先 Softmax 再乘下三角 0/1 置零"],
+          ["full", "🔓 无掩码：双向全可见（Encoder 模式，未来直接泄露）"],
+        ],
+        value: "causal",
+      },
+    ],
+    buttons: [
+      {
+        label: "✅ 标准因果掩码 (复位)",
+        primary: true,
+        onClick: (_p, ctl) => { syncSelect("#pg-mask", 0, "causal"); ctl.set("mode", "causal"); ctl.set("ds01", 0.0); },
+      },
+      {
+        label: "❌ 切到错误 Post-Softmax 置零",
+        onClick: (_p, ctl) => { syncSelect("#pg-mask", 0, "post_zero"); ctl.set("mode", "post_zero"); ctl.set("ds01", 0.0); },
+      },
+      {
+        label: "🔍 在错误模式下调大未来词 (+2.5) 看穿越！",
+        onClick: (_p, ctl) => { syncSelect("#pg-mask", 0, "post_zero"); ctl.set("mode", "post_zero"); ctl.set("ds01", 2.5); },
+      },
+    ],
+    caption: "左图：进入 Softmax 的分数矩阵（−∞ 表示在归一化前被彻底屏蔽）；右图：最终注意力权重矩阵 A（行 i 看列 j）。",
+    render(p, out) {
+      const res = evalMaskMode(p.mode, p.ds01);
+      const isOk = p.mode === "causal";
+
+      out.innerHTML =
+        '<div class="cards" style="margin:0 0 12px;align-items:center;">' +
+          '<div style="display:flex;justify-content:center;" class="hm-score"></div>' +
+          '<div style="display:flex;justify-content:center;" class="hm-attn"></div>' +
+        '</div>';
+
+      LabPlot.heatmap(out.querySelector(".hm-score"), res.sDisp, {
+        rowLabels: words.map((w, i) => `i=${i} ${w}`),
+        colLabels: words.map((w, j) => `j=${j} ${w}`),
+        decimals: 2,
+        scheme: "div",
+        min: -2.5,
+        max: 4.5,
+        cell: 52,
+        title: p.mode === "causal" ? "Softmax 输入分数 S + M（上三角 −∞）" : "Softmax 输入分数 S（未屏蔽未来！）",
+      });
+
+      LabPlot.heatmap(out.querySelector(".hm-attn"), res.attn, {
+        rowLabels: words.map((w, i) => `i=${i} ${w}`),
+        colLabels: words.map((w, j) => `j=${j} ${w}`),
+        decimals: 3,
+        min: 0,
+        max: 1,
+        cell: 52,
+        color: isOk ? 3 : 4,
+        title: isOk ? "归一化注意力权重 A（每行和恒为 1）" : "最终权重 A（概率崩塌或未来穿越！）",
+      });
+
+      Lab.readout(out, {
+        "首词自权重 $A_{0,0}$": res.attn[0][0],
+        "第 0 行概率和": res.rowSums[0],
+        "第 1 行概率和": res.rowSums[1],
+        "上三角直接未来权重和": res.futureWeightSum,
+        "未来梯度泄露 $\\partial A_{0,0}/\\partial s_{0,1}$": res.gradS01,
+        "因果合法性诊断": isOk ? "✓ 零泄露 · 概率归一" : (p.mode === "post_zero" ? "✗ 分母泄密 · 概率失真" : "✗ 未来答案直接暴露"),
+      }, 4);
+    },
+  });
+});
+</script>
+</body>
+</html>

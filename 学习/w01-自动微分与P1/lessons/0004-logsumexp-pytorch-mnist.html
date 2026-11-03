@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PyTorch 工业级对照：Log-Sum-Exp 防溢出与 nn.CrossEntropyLoss · w01-自动微分与P1</title>
+<meta name="lab:topic" content="w01-自动微分与P1">
+<meta name="lab:num" content="4">
+<meta name="lab:step" content="4">
+<meta name="lab:date" content="2026-11-02">
+<link rel="stylesheet" href="../../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body>
+<div class="lab-layout">
+  <nav id="lab-toc" aria-label="目录"></nav>
+
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../../index.html">📚 学习地图</a> / <a href="../../index.html#w01-自动微分与P1">w01-自动微分与P1</a> / 第 4 课</div>
+      <h1>PyTorch 工业级对照：Log-Sum-Exp 防溢出与 <code>nn.CrossEntropyLoss</code></h1>
+      <p class="subtitle">为什么手写 Softmax 动辄爆出 NaN 或梯度假死，而一行 F.cross_entropy 就算输入 1000 也稳如泰山？</p>
+      <div class="chips">
+        <span class="chip">⏱ 约 20 分钟</span>
+        <span class="chip">🧭 计划步骤 4 / 5</span>
+        <span class="chip">💻 projects/p1-tiny-llm/src/w01_mlp_mnist.py</span>
+        <span class="chip">📓 04-LLM大模型/教学/07-输出层与损失函数.ipynb</span>
+      </div>
+    </header>
+
+    <div class="win">
+      <div class="icon">🎯</div>
+      <div>
+        <h4>本课收获</h4>
+        <p>面对任意极端 Logits（如 $z = [1000, 999, 995]$），能徒手推通并算出 <strong>Log-Sum-Exp 融合交叉熵损失</strong>（精确到 $5.3182$），一眼揪出「网络末尾误加 <code>nn.Softmax()</code>」与「<code>log(p + 1e-12)</code> 下溢截断」两大工程暗坑，掌握 PyTorch 训练/评测标准范式。</p>
+      </div>
+    </div>
+
+    <div class="prereq">
+      <b>前置依赖：</b>
+      <span class="known">✓ Softmax + 交叉熵梯度 $p - y$ 与 NumPy 矩阵反向传播（第 2–3 课）</span> ·
+      <span class="gap">△ IEEE 754 浮点数指数表示上限（FP64 / FP32 / BF16 / FP16，本课 §1 直接建表讲清）</span>
+    </div>
+
+    <!-- ========== §1 痛点与直觉 ========== -->
+    <section>
+      <h2><span class="num">01</span>痛点与直觉：计算机浮点数里的「双向上下溢灾难」</h2>
+      <p>在纯数学世界里，$p_i = \frac{e^{z_i}}{\sum_j e^{z_j}}$ 与交叉熵 $L = -\log p_y$ 无懈可击；可一旦搬进有限位宽的 GPU 寄存器，指数函数 $e^z$ 的爆炸增长就会在<strong>正负两个方向</strong>同时埋下致命地雷：</p>
+
+      <aside class="sidenote">
+        <b>为什么一次 <code>NaN</code> 就能毁掉整轮训练？</b><br>
+        IEEE 754 规定任何数与 <code>NaN</code> 加减乘除结果仍是 <code>NaN</code>。只要一个 Batch 里有 1 个样本的某个 logit 触发 <code>inf / inf = NaN</code>，反向矩阵乘 <code>A1.T @ dZ2</code> 就会瞬间把整层权重 <code>W2</code> 染成全 <code>NaN</code>，不可逆转。
+      </aside>
+
+      <ul>
+        <li><strong>灾难一：上溢（Overflow → <code>inf / inf = NaN</code>）</strong>：当网络初始化略偏大或学习率稍高时，logit $z$ 很容易冲上几十甚至几百。一旦超出浮点数的最大可表示对数阈值，$e^z$ 直接变成 <code>+inf</code>，紧接着分子除以分母算出 <code>inf / inf = NaN</code>，一轮迭代整网权重全废！</li>
+        <li><strong>灾难二：下溢（Underflow → <code>inf</code> 或梯度断流）</strong>：很多同学以为「算 <code>softmax</code> 前先减最大值 $z_{\max}$ 再算 <code>-np.log(p[y] + 1e-12)</code> 就安全了」（正如过渡代码 <code>w01_mlp_mnist.py</code> 第 58、83 行所写）。<strong>错！那只防住了上溢，没防住下溢！</strong>当目标类严重猜错、例如 $z = [0, -2, -1000],\ y=2$ 时，$e^{-1000}$ 在 FP64 中会直接下溢为精确的 <code>0.0</code>！不加 $\epsilon$ 会爆 <code>-log(0.0) = inf</code>；就算硬加 <code>1e-12</code> 护栏，损失也会被强行截断在 $-\ln(10^{-12}) \approx \mathbf{27.6310}$，与真实损失 $\mathbf{1000.1269}$ 相差十万八千里，对 $\log(p_y+\epsilon)$ 自动求导更会因为 $p_y=0$ 直接断掉梯度！</li>
+      </ul>
+
+      <table class="shape">
+        <tr><th>浮点格式</th><th>位宽结构（符号/指数/尾数）</th><th>$e^z$ 上溢临界点 $z_{\max}$</th><th>训练实战表现</th></tr>
+        <tr><td><code>float64</code> (NumPy 默认)</td><td>1 / 11 / 52 bit</td><td>709.78</td><td>$z = 710 \implies e^z = \texttt{inf}$；$z = -746 \implies e^z = 0.0$</td></tr>
+        <tr><td><code>float32</code> (PyTorch 默认)</td><td>1 / 8 / 23 bit</td><td>88.72</td><td>$z = 89 \implies e^z = \texttt{inf}$；单精度下极易触发</td></tr>
+        <tr><td><code>bfloat16</code> (RTX 4080 / A800)</td><td>1 / 8 / 7 bit</td><td>88.72</td><td>指数位与 FP32 同为 8 bit，动态范围极宽，大模型训练首选</td></tr>
+        <tr><td><code>float16</code> (Colab T4)</td><td>1 / 5 / 10 bit</td><td>11.09</td><td><strong>高危！</strong>$z = 12$ 就爆 <code>inf</code>，没有 Log-Sum-Exp 寸步难行</td></tr>
+      </table>
+
+      <div class="callout intuition">
+        <span class="ct">电梯平移 + 对数拆壳（两步破局直觉）</span>
+        <p><strong>第一步防上溢（坐电梯平移）</strong>：两个人的身高差，在海拔 0 米量和在珠峰 8848 米量完全一样。把全班最高的那个 logit 当成「0 楼基准」，所有人减掉它，指数输入全都 $\le 0$，输出结果永远关在 $(0, 1]$ 笼子里，绝不撞穿天花板。<br>
+        <strong>第二步防下溢（对数正面拆指数）</strong>：既然最终要算的是 $-\log p_y$，<strong>根本没必要先算出极小的 $p_y$ 再取对数！</strong>直接把 $\log$ 套在分式外层，分子上的 $\log(e^{z_y - m})$ 当场抵消还原成普通减法 $z_y - m$，连 $e^{-100000}$ 都不用算！</p>
+      </div>
+    </section>
+
+    <!-- ========== §2 分步公式推导 ========== -->
+    <section>
+      <h2 id="sec-deriv"><span class="num">02</span>分步公式推导：平移不变性与 Log-Sum-Exp 融合公式</h2>
+      <p>下面顺着上层 <code>04-LLM大模型/教学/07-输出层与损失函数.ipynb</code> 的符号体系，分 4 步推通 PyTorch <code>F.log_softmax</code> 与 <code>nn.CrossEntropyLoss</code> 的底层算子真相：</p>
+
+      <div class="lab-stepper" id="deriv-lse" data-title="从朴素 Softmax 到工业级 Log-Sum-Exp 交叉熵" data-mode="accumulate">
+        <div class="step" data-title="证明 Softmax 平移不变性">
+          <p>对任意常数 $c \in \mathbb{R}$，将每个类别的 logit 平移 $z_j \leftarrow z_j - c$，利用指数拆分 $e^{a-c} = e^{-c}e^a$：</p>
+          <p>$$\frac{e^{z_i - c}}{\sum_{j=1}^K e^{z_j - c}} \;=\; \frac{\cancel{e^{-c}}\, e^{z_i}}{\cancel{e^{-c}} \sum_{j=1}^K e^{z_j}} \;=\; \frac{e^{z_i}}{\sum_{j=1}^K e^{z_j}} \;=\; p_i$$</p>
+          <p class="small muted">结论：同一行 logits 整体加减任意常数 $c$，Softmax 输出概率分布分毫不变。</p>
+        </div>
+
+        <div class="step" data-title="取最大值 m = max(z)，锁死分子上界与分母下界">
+          <p>专门挑选当前样本的最大 logit 作为平移基准：$m = \max_{1 \le j \le K} z_j$。此时对任意类别 $j$ 必有 $z_j - m \le 0$，且最大类所在位置恰好满足 $z_{\max} - m = 0$：</p>
+          <p>$$0 < e^{z_j - m} \le 1, \qquad 1 \;\le\; \sum_{j=1}^K e^{z_j - m} \;\le\; K$$</p>
+          <p class="small muted">一石二鸟：① 所有指数项最大不超过 $e^0 = 1$，<strong>彻底根除上溢</strong>；② 分母求和至少包含一个 $1$，落在 $[1, K]$ 安全区内，<strong>取对数绝不会遇到 $\log(0)$</strong>！</p>
+        </div>
+
+        <div class="step" data-title="对数与指数正面抵消（F.log_softmax 内核公式）">
+          <p>不要先算除法求 $p_y$，直接对平移后的分式求 $\log p_y$，用 $\log(A/B) = \log A - \log B$ 与 $\log(e^u) = u$ 拆壳：</p>
+          <p>$$\log p_y \;=\; \log \frac{e^{z_y - m}}{\sum_{j=1}^K e^{z_j - m}} \;=\; (z_y - m) - \log \sum_{j=1}^K e^{z_j - m}$$</p>
+          <p>取负号即得单样本 <code>nn.CrossEntropyLoss</code> 的工业级融合公式：</p>
+          <p>$$L \;=\; -\log p_y \;=\; m - z_y + \log \sum_{j=1}^K e^{z_j - m}$$</p>
+        </div>
+
+        <div class="step" data-title="极小算例手算对账：z = [1000, 999, 995], y = 2">
+          <p>设三分类单样本 $z = [1000.0,\ 999.0,\ 995.0]$，真实标签 $y = 2$（即 $z_y = 995.0$）：</p>
+          <ul>
+            <li><strong>朴素写法</strong>：$e^{1000.0}$ 在 FP64 中直接冲破 $709.78$ 变成 <code>inf</code>，<code>inf / inf = NaN</code>，当场崩溃！</li>
+            <li><strong>Log-Sum-Exp 融合写法</strong>：先取 $m = 1000.0$，平移后 $z - m = [0.0,\ -1.0,\ -5.0]$：
+              $$\sum_{j=1}^3 e^{z_j - m} = e^0 + e^{-1} + e^{-5} \approx 1 + 0.36787944 + 0.00673795 = 1.37461739$$
+              $$L = 1000.0 - 995.0 + \ln(1.37461739) = 5.0 + 0.31817543 = \mathbf{5.31817543}$$
+              与 PyTorch <code>F.cross_entropy</code> 计算结果逐位吻合，反向梯度 $\nabla_z L = p - \text{onehot}(y) = [+0.7275,\ +0.2676,\ -0.9951]$ 同样精准无损！</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="eq-explain">
+        <span class="eq-tag">Log-Sum-Exp 交叉熵</span>
+        <p>$$\operatorname{LSE}(z) = m + \log \sum_{j=1}^K e^{z_j - m}, \qquad L(z, y) = \operatorname{LSE}(z) - z_y = (m - z_y) + \log \sum_{j=1}^K e^{z_j - m}$$</p>
+        <dl>
+          <dt>$m = \max_j z_j$</dt><dd>当前样本在类别维（<code>axis=-1, keepdims=True</code>）上的最大 logit 标量</dd>
+          <dt>$m - z_y \ge 0$</dt><dd>最大 logit 与正确类别 logit 的直接线性落差（当 $m \gg z_y$ 时主导损失，完全绕开 $e^{z_y - m}$ 下溢！）</dd>
+          <dt>$\log \sum_j e^{z_j - m}$</dt><dd>平滑修正项，严格有界于 $[0,\ \ln K]$ 之间，在任何浮点精度下都绝不溢出</dd>
+        </dl>
+      </div>
+
+      <p>对比一下本仓教学过渡代码与大模型课程工业级手搓代码的写法演进：</p>
+      <div class="lab-tabs">
+        <div class="tab" data-label="⚠️ 过渡写法：先 Softmax 再 log(P + 1e-12)">
+<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="55" data-href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code class="language-python">    @staticmethod
+    def softmax(z: np.ndarray) -&gt; np.ndarray:
+        # 防数值溢出减去 max
+        shift_z = z - np.max(z, axis=1, keepdims=True)
+        exp_z = np.exp(shift_z)
+        return exp_z / np.sum(exp_z, axis=1, keepdims=True)
+
+    def forward(self, X: np.ndarray) -&gt; tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        前向传播:
+        X: (B, 784)
+        返回: (Z1, A1, Z2, P)
+        """
+        Z1 = X @ self.W1 + self.b1           # (B, hidden_dim)
+        A1 = np.maximum(0, Z1)                # ReLU: (B, hidden_dim)
+        Z2 = A1 @ self.W2 + self.b2          # (B, out_dim)
+        P = self.softmax(Z2)                 # Softmax 概率分布: (B, out_dim)
+        return Z1, A1, Z2, P
+
+    def train_step(self, X: np.ndarray, y: np.ndarray) -&gt; float:
+        """
+        X: (B, 784)
+        y: (B,) 类别索引 0~9
+        """
+        B = X.shape[0]
+        Z1, A1, Z2, P = self.forward(X)
+
+        # 1. 计算交叉熵损失
+        log_likelihood = -np.log(P[np.arange(B), y] + 1e-12)
+        loss = float(np.mean(log_likelihood))</code></pre>
+          <p class="small muted">点评：在 MNIST 温和数值下够用（而且第 102 行手写反向直接用了化简后的 <code>(P - Y) / B</code> 避开了对 <code>log</code> 求导），但如果交给自动微分框架，<code>P[y]</code> 下溢变 <code>0</code> 时第 83 行会立刻卡在 $27.63$ 假死。</p>
+        </div>
+        <div class="tab" data-label="✅ 工业级写法：融合 log_softmax_stable">
+<pre data-file="../04-LLM大模型/教学/07-输出层与损失函数.ipynb · Cell#7" data-start="1"><code class="language-python"># ============ 1. 手搓：log-softmax / 平滑 CE 前向 / 反向 ============
+
+def log_softmax_stable(logits):
+    """数值稳定的 log-softmax：先减每行最大值，再取 log 归一化"""
+    # logits: (..., V)，在最后一维上做 softmax
+    z_max = np.max(logits, axis=-1, keepdims=True)              # 每行最大值，keepdims 保持形状便于广播
+    z = logits - z_max                                          # 平移：所有指数项 ≤ exp(0)=1，不会溢出
+    log_sum = np.log(np.sum(np.exp(z), axis=-1, keepdims=True)) # log(Σ exp(z)) 即 logsumexp
+    return z - log_sum                                          # log_softmax = z - logsumexp</code></pre>
+          <p class="small muted">点评：第 9 行直接用减法 <code>z - log_sum</code> 输出 $\log p$，需要概率 $p$ 时再算 <code>probs = np.exp(log_probs)</code>，上下溢双向免疫——这正是 PyTorch <code>F.log_softmax</code> 与 <code>nn.CrossEntropyLoss</code> 的标准等价实现！</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== §3 PyTorch 工业级代码拆解 ========== -->
+    <section>
+      <h2><span class="num">03</span>代码讲解：从手写 NumPy 到 PyTorch GPU 五步闭环</h2>
+      <p>理解了底层数学与数值稳定机制后，再看本仓 <code>projects/p1-tiny-llm/src/w01_mlp_mnist.py</code> 第 134–179 行的 <code>run_torch</code>，你会发现每一行 API 都与你手撕过的 NumPy 模块严丝合缝。点击右侧卡片逐段对照：</p>
+
+      <div class="code-walk" data-dim>
+<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="134" data-href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code class="language-python">def run_torch(train_loader, test_loader, epochs: int = 5):
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"🚀 PyTorch 训练设备: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
+
+    model = nn.Sequential(
+        nn.Flatten(),
+        nn.Linear(784, 128),
+        nn.ReLU(),
+        nn.Linear(128, 10)
+    ).to(device)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
+
+    for epoch in range(1, epochs + 1):
+        model.train()
+        total_loss = 0.0
+        for x, y in train_loader:
+            x, y = x.to(device), y.to(device)
+            optimizer.zero_grad()
+            out = model(x)
+            loss = criterion(out, y)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+
+        # 评测
+        model.eval()
+        correct, total = 0, 0
+        with torch.no_grad():
+            for x, y in test_loader:
+                x, y = x.to(device), y.to(device)
+                preds = model(x).argmax(dim=1)
+                correct += (preds == y).sum().item()
+                total += y.size(0)
+
+        acc = correct / total
+        print(f"Epoch {epoch:02d} | Avg Loss: {total_loss / len(train_loader):.4f} | Test Acc: {acc * 100:.2f}%")
+
+    assert acc &gt;= 0.97, f"未达到 97% 准确率目标: {acc*100:.2f}%"
+    print(f"🎉 PyTorch 模型达标！最终测试集准确率: {acc * 100:.2f}%")</code></pre>
+        <ol class="walk">
+          <li data-lines="139-140"><strong>算力自适应搬运</strong>：自动探测 CUDA GPU（本机识别为 <code>RTX 4080 Laptop GPU</code>）；注意模型权重与每个 Batch 的输入张量 <code>x, y</code> 必须在同一设备上，否则会报经典的 <code>Expected all tensors to be on the same device</code>。</li>
+          <li data-lines="142-147"><strong>⚠️ 头号面试红线：最后一层绝不能加 <code>nn.Softmax()</code>！</strong><code>nn.Linear(128, 10)</code> 直接输出未归一化的裸 logits。如果画蛇添足在末尾接上 <code>Softmax</code>，不仅破坏了 Log-Sum-Exp 对数抵消，还会把输入压进 $[0, 1]$，导致 10 分类损失永远降不到 $\ln(e+9)-1 \approx \mathbf{1.4612}$ 以下，且多乘一层饱和导数使收敛慢如蜗牛！</li>
+          <li data-lines="149-150"><strong>融合损失 + AdamW 优化器</strong>：<code>nn.CrossEntropyLoss()</code> 内部一步打包执行「<code>F.log_softmax</code>（含减 max 防溢出）+ 负对数似然选取 + Batch 取均值」；<code>AdamW</code> 用一阶动量与二阶自适应步长替代手写固定步长 SGD，5 个 Epoch 即可轻松突破 $97.5\%$。</li>
+          <li data-lines="156-162"><strong>训练循环五步标准咒语</strong>：① <code>zero_grad()</code> 清空上一步残留梯度（呼应第 1 课铁律二：底层默认 <code>+=</code> 累加！）→ ② <code>model(x)</code> 前向建图 → ③ <code>criterion(out, y)</code> 算标量损失 → ④ <code>loss.backward()</code> 逆拓扑序反传 → ⑤ <code>optimizer.step()</code> 更新参数。第 162 行务必用 <code>loss.item()</code> 取出纯 Python 浮点数，防止把整轮计算图挂在内存里撑爆显存！</li>
+          <li data-lines="165-173"><strong>评测双保险 <code>eval()</code> + <code>no_grad()</code></strong>：<code>model.eval()</code> 负责切换 Dropout 与 BatchNorm 的推理行为（养成工业级肌肉记忆）；<code>with torch.no_grad():</code> 彻底关闭动态图构建与前向激活缓存，省显存又提速。预测类别直接算 <code>model(x).argmax(dim=1)</code>，因为指数函数单调递增，最大 logit 必然对应最大概率，无需浪费算力求 Softmax！</li>
+        </ol>
+      </div>
+
+      <h3>三端算力混合精度防坑对照（执行训练前必查）</h3>
+      <p>从玩具 MNIST 迈向后续 P1–P5 的 Transformer 与 7B VLA 训练时，你会在本机 4080、Colab T4 与远程 A800 之间切换。不同显卡架构对 16 位浮点数的硬件支持截然不同，直接决定了你会不会在第一轮就撞上 <code>Loss = NaN</code>：</p>
+
+      <div class="lab-tabs" data-group="hw">
+        <div class="tab" data-label="💻 本机 RTX 4080 Laptop (Ada SM89)">
+          <div class="callout lab">
+            <span class="ct">主力开发端：原生支持 BF16 + SDPA / FlashAttention-2</span>
+            <ul>
+              <li><strong>数值优势</strong>：Ada 架构原生加速 <code>torch.bfloat16</code>，保留了与 FP32 完全一致的 <strong>8 位指数位</strong>（$e^z$ 上溢线同为 $88.72$），无需繁琐的 <code>GradScaler</code> 也不易溢出。</li>
+              <li><strong>环境铁律</strong>：本机 Ubuntu 系统自带 <code>/usr/bin/python3</code> 为 Python 3.14，跑实验务必使用 <code>~/Apps/miniconda3/envs/ai-lab/bin/python</code>（或 <code>test</code> 环境，Python 3.11）。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="tab" data-label="☁️ 云端 Colab T4 (Turing SM75)">
+          <div class="callout warn">
+            <span class="ct">高危防坑端：严禁开 bf16=True！Log-Sum-Exp 是保命刚需</span>
+            <ul>
+              <li><strong>硬件限制</strong>：Turing 架构（SM75）没有 BF16 Tensor Core，强开会极慢或报错；必须配置 <code>fp16=True, bf16=False, attn_implementation="sdpa"</code>。</li>
+              <li><strong>溢出警戒</strong>：<code>fp16</code> 只有 <strong>5 位指数位</strong>，最大数值仅 $65504$，logit 只要超过 <strong>$11.09$</strong>（比如 $z = 12$）直接算 <code>exp</code> 就会爆 <code>inf</code>！因此在 T4 上绝不可手写朴素 Softmax，必须走 <code>F.cross_entropy</code> / <code>F.log_softmax</code> 内核并配合 <code>torch.cuda.amp.GradScaler</code>。</li>
+            </ul>
+          </div>
+        </div>
+        <div class="tab" data-label="🖥️ 远程集群 A800 (Ampere SM80 · 80GB)">
+          <div class="callout principle">
+            <span class="ct">规模化重训端：本机冒烟通过后再上大卡</span>
+            <ul>
+              <li><strong>工作流纪律</strong>：先在本机 4080 跑通 <code>max_steps=5</code> 冒烟测试，确认 Loss 正常下降、无 <code>NaN</code> 且梯度范数健康后，再推上 A800 进 <code>tmux</code> 开 <code>bf16=True</code> + <code>wandb</code> 跑全量长训。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== §4 交互实验 ========== -->
+    <section>
+      <h2 id="sec-pg"><span class="num">04</span>交互实验：拖动放大倍数 $k$ 直击「假死截断」与「<code>NaN</code> 崩盘」</h2>
+      <p>固定一组基准方向 $[1.0,\ 0.8,\ -0.5]$，将输入 logits 按倍数放大为 $z(k) = k \cdot [1.0,\ 0.8,\ -0.5]$（默认真实类别 $y = 2$，即最小项 $-0.5k$）。拖动滑块 $k \in [1, 1000]$，亲眼对比<strong>「朴素 <code>exp</code> + <code>log(p + 1e-12)</code>」</strong>与<strong>「工业级 Log-Sum-Exp 融合公式」</strong>在三个数值区间的命运分野：</p>
+
+      <div id="pg-lse"></div>
+
+      <p class="small muted">💡 <strong>三个必试观测点</strong>：① 点「温和区 ($k=1$)」，两条曲线完美贴合在 $2.2139$；② 点「下溢截断区 ($k=100$)」，真实损失已升至 $150.0$，而朴素 <code>+1e-12</code> 写法从 $k \approx 18.4$ 起就撞上水平死线 $27.6310$（梯度彻底归零假死！）；③ 把滑块拖过 <strong>$k = 710$</strong>，朴素曲线因为 $p_0 = \texttt{inf}/\texttt{inf} = \texttt{NaN}$ 当场断线消失，唯有紫色的 Log-Sum-Exp 全程笔直精确！</p>
+    </section>
+
+    <!-- ========== §5 小结 ========== -->
+    <section>
+      <h2><span class="num">05</span>小结</h2>
+      <div class="callout summary">
+        <span class="ct">本课核心四句话</span>
+        <ul>
+          <li><strong>双向陷阱</strong>：裸算 $\exp(z)$ 在大数值时触发上溢（FP16 仅 $11.09$、FP32 仅 $88.72$、FP64 仅 $709.78$）导致 <code>inf/inf = NaN</code>；先算 Softmax 再算 $\log p_y$ 则会在负差值过大时触发 $p_y \to 0.0$ 下溢。</li>
+          <li><strong>Log-Sum-Exp 融合公式</strong>：利用平移不变性取 $m = \max_j z_j$，并将对数与分子指数正面抵消为 $L = m - z_y + \log \sum_j e^{z_j - m}$，使所有指数输入 $\le 0$、对数输入 $\in [1, K]$，上下溢同时根除。</li>
+          <li><strong>网络架构红线</strong>：搭配 <code>nn.CrossEntropyLoss</code> 时，模型最后一层 <code>nn.Linear</code> 必须直接输出裸 logits，<strong>严禁</strong>加 <code>nn.Softmax</code>。</li>
+          <li><strong>工程闭环习惯</strong>：训练牢记五步咒语（<code>zero_grad → forward → criterion → backward → step</code>，日志取 <code>.item()</code>），评测必开 <code>model.eval()</code> + <code>with torch.no_grad():</code>。</li>
+        </ul>
+      </div>
+
+      <div class="callout interview">
+        <span class="ct">30 秒面试表达模板</span>
+        <p>「工程上绝不能把 Softmax 和交叉熵拆成两步写，原因有二：一是上溢，比如在 FP16 下 logit 超过 11.09 算 <code>exp</code> 就会爆 <code>inf</code> 导致 <code>inf/inf = NaN</code>；二是下溢，即使减掉最大值防住了上溢，当正确类 logit 远小于最大类时，先算出 <code>p</code> 会下溢成 0，导致 <code>-log(p)</code> 爆无穷或被 <code>1e-12</code> 截断丢掉梯度。PyTorch 的 <code>nn.CrossEntropyLoss</code> 内部融合了 <code>log_softmax</code>，利用平移不变性提取行最大值 $m$，化简为 $m - z_y + \log\sum e^{z_j - m}$，既让指数项恒在 $(0, 1]$ 内，又让分子对数与指数直接抵消，同时保住了前向精度与 $p - y$ 反向梯度。」</p>
+      </div>
+    </section>
+
+    <!-- ========== §6 可选自测 ========== -->
+    <section>
+      <h2><span class="num">06</span>想检验一下？（可选 · 点击展开）</h2>
+
+      <details class="reveal q">
+        <summary>1. 如果新手在 10 分类 MNIST 的 <code>nn.Linear(128, 10)</code> 后面误加了一层 <code>nn.Softmax(dim=-1)</code>，再喂给 <code>nn.CrossEntropyLoss()</code>，训练 Loss 最低能降到多少？</summary>
+        <div>
+          <p>即使模型已经把某样本预测得 100% 确定，第一层 Softmax 的输出顶多是 one-hot 向量 $[1, 0, \dots, 0]$。再把它当成 logits 送进 <code>nn.CrossEntropyLoss</code> 时，内部又做了一次 Softmax，正确类的二次概率只有 $\frac{e^1}{e^1 + 9 e^0} = \frac{e}{e + 9} \approx 0.2320$，对应损失锁死在：</p>
+          <p>$$L_{\min} = -\ln\frac{e}{e + 9} = \ln(e + 9) - 1 \approx \mathbf{1.46115}$$</p>
+          <p>正常 MNIST 的交叉熵能轻松降到 $0.08$ 以下，如果你看到训练 Loss 死活卡在 $1.46 \sim 1.50$ 下不去，99% 是因为不小心做了两次 Softmax！</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>2. 🎤 面试追问：既然训练时减去了 $m = \max_j z_j$，而 $m$ 本身依赖输入 $z$，反向传播求 $\partial L / \partial z_i$ 时，$m$ 的导数会不会改变 $p_i - y_i$ 这个结论？</summary>
+        <div>
+          <p><strong>完全不会改变！</strong>因为第一步已经严格证明了恒等式 $\log \sum_j e^{z_j} \equiv m + \log \sum_j e^{z_j - m}$ 对任意实数 $m$ 逐点相等，左右两边定义的是同一个光滑函数。即便显式对右式求偏导（假设最大值在下标 $k^*$ 处唯一取得，即 $\partial m/\partial z_i = \mathbb{1}[i = k^*]$）：</p>
+          <p>$$\frac{\partial}{\partial z_i}\left(m + \log \sum_j e^{z_j - m}\right) = \mathbb{1}[i=k^*] + \frac{\sum_j e^{z_j - m}(\mathbb{1}[j=i] - \mathbb{1}[j=k^*])}{\sum_j e^{z_j - m}} = \mathbb{1}[i=k^*] + p_i - \mathbb{1}[i=k^*]\underbrace{\sum_j p_j}_{=1} = p_i$$</p>
+          <p>$\mathbb{1}[i=k^*]$ 项完美正负抵消！因此在 PyTorch 实现中甚至可以直接写 <code>m = z.max(dim=-1, keepdim=True).values.detach()</code> 阻断 $m$ 分支梯度，结果依旧精确等于 $p_i - y_i$。</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>3. 🎤 面试追问：大语言模型（词表 $V = 128{,}256$，序列长 $T = 8192$）在算最后一层 CrossEntropy 时为什么依然是显存峰值杀手？工业界怎么优化？</summary>
+        <div>
+          <p>虽然 Log-Sum-Exp 解决了数值溢出，但如果先把整个 <code>logits</code> 张量 $(B, T, V)$ 用 FP32 物化在显存里（例如 $B{=}2, T{=}8192, V{=}128256$），仅这一个张量就要占 $2 \times 8192 \times 128256 \times 4\text{B} \approx \mathbf{8.4\text{ GB}}$！工业界（如 FlashAttention 作者的 <code>FusedCrossEntropy</code> 或 Liger-Kernel）会采用 <strong>Online Softmax（在线流式更新最大值 $m$ 与指数和）+ 分块融合算子（Chunked Fused CE）</strong>，边做词表分块矩阵乘边在 SRAM 内完成 Log-Sum-Exp 与反向梯度计算，根本不在显存中落地完整的巨型 <code>logits</code> 矩阵。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §7 延伸阅读与实战指令 ========== -->
+    <section>
+      <h2><span class="num">07</span>延伸阅读与 P1 MNIST 达标指南</h2>
+      <div class="callout source">
+        <span class="ct">动手跑通本课双基准（约 2 分钟）</span>
+        <p>1. 在本机 RTX 4080 终端用 Conda 环境一键对比你的手写 NumPy MLP（$\ge 95\%$）与 PyTorch GPU 工业级模型（$\ge 97\%$）：<br>
+        <code>cd projects/p1-tiny-llm &amp;&amp; ~/Apps/miniconda3/envs/ai-lab/bin/python src/w01_mlp_mnist.py --mode both --epochs 5</code><br>
+        2. 上层课程对照：<code>../04-LLM大模型/教学/07-输出层与损失函数.ipynb</code>（Cell#4–9，顺手看一眼权重共享 Weight Tying 与标签平滑 Label Smoothing 如何无缝复用同一套 <code>log_softmax_stable</code>）。</p>
+      </div>
+    </section>
+
+    <!-- LAB:NAV -->
+    <nav class="lab-nav"><a class="prev" href="0003-numpy-matrix-bp-shapes.html"><small>← 上一课</small>从标量到矩阵：NumPy 两层 MLP 批量反向传播与维度对齐</a><a class="next" href="0005-how-to-read-a-paper.html"><small>下一课 →</small>Keshav《How to Read a Paper》三遍阅读法</a></nav>
+    <!-- /LAB:NAV -->
+
+    <div class="ask-ai">💬 哪里没懂，直接问 AI 老师。常用指令：<code>继续</code>（进入第 5 课：Keshav 三遍读论文法）· <code>详细推导</code> · <code>讲解代码</code> · <code>可视化</code> · <code>整理笔记</code></div>
+    <footer class="lab-footer">生成于 2026-11-02 · lab-teach · 数值来自 Python 金标准（NumPy + PyTorch float64 双重校验）</footer>
+  </main>
+
+  <aside class="lab-margin"></aside>
+</div>
+
+<!-- LAB:GOLDEN -->
+<script type="application/json" id="lab-golden">{"fp64_max_z": 709.782713, "fp32_max_z": 88.722839, "bf16_max_z": 88.718925, "fp16_max_z": 11.09375, "eps_clamp_loss": 27.63102112, "under_true_loss": 1000.12692801, "ex_sum_exp": 1.37461739, "ex_lse_loss": 5.31817543, "ex_probs": [0.72747516, 0.26762315, 0.00490169], "ex_grad_z": [0.72747516, 0.26762315, -0.99509831], "double_softmax_min_loss": 1.46115017, "pg_k1_lse": 2.2138616, "pg_k1_naive_eps": 2.2138616, "pg_k100_lse": 150.0, "pg_k100_naive_eps": 27.63102112, "pg_k800_lse": 1200.0, "_meta": {"script": "学习/w01-自动微分与P1/verify_0004.py", "python": "test", "generated": "2026-11-03"}}</script>
+<!-- /LAB:GOLDEN -->
+
+<script src="../../../.agents/skills/lab-teach/assets/lab.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-math.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-plot.js"></script>
+<script>
+Lab.ready(() => {
+  const baseV = [1.0, 0.8, -0.5];
+
+  function lseLoss(z, y) {
+    const m = LabMath.max(z);
+    let sumExp = 0;
+    for (let j = 0; j < z.length; j++) sumExp += Math.exp(z[j] - m);
+    return (m - z[y]) + Math.log(sumExp);
+  }
+
+  function naiveOneHotEpsLoss(z, y, eps = 1e-12) {
+    const ez = z.map((v) => Math.exp(v));
+    const s = ez.reduce((a, b) => a + b, 0);
+    const p = ez.map((v) => v / s);
+    let total = 0;
+    for (let j = 0; j < z.length; j++) {
+      const yj = j === y ? 1.0 : 0.0;
+      total += -yj * Math.log(p[j] + eps);
+    }
+    return total;
+  }
+
+  // 1. 校验 §1–§3 核心数值算例与边界
+  const zEx = [1000.0, 999.0, 995.0];
+  const yEx = 2;
+  const exLoss = lseLoss(zEx, yEx);
+  const exProbs = LabMath.softmax(zEx);
+  const exGrad = exProbs.map((p, i) => p - (i === yEx ? 1.0 : 0.0));
+  const zUnder = [0.0, -2.0, -1000.0];
+  const doubleSmMin = Math.log(Math.E + 9.0) - 1.0;
+
+  Lab.check("ex_lse_loss", exLoss, undefined, { tol: 1e-7, badge: "#sec-deriv" });
+  Lab.check("ex_probs", exProbs, undefined, { tol: 1e-7 });
+  Lab.check("ex_grad_z", exGrad, undefined, { tol: 1e-7 });
+  Lab.check("under_true_loss", lseLoss(zUnder, 2), undefined, { tol: 1e-7 });
+  Lab.check("eps_clamp_loss", -Math.log(0.0 + 1e-12), undefined, { tol: 1e-7 });
+  Lab.check("double_softmax_min_loss", doubleSmMin, undefined, { tol: 1e-7 });
+  Lab.check("pg_k1_lse", lseLoss(baseV.map((v) => 1 * v), 2), undefined, { tol: 1e-7 });
+  Lab.check("pg_k100_lse", lseLoss(baseV.map((v) => 100 * v), 2), undefined, { tol: 1e-7, badge: "#sec-pg" });
+  Lab.check("pg_k100_naive_eps", naiveOneHotEpsLoss(baseV.map((v) => 100 * v), 2), undefined, { tol: 1e-7 });
+  Lab.check("pg_k800_lse", lseLoss(baseV.map((v) => 800 * v), 2), undefined, { tol: 1e-7 });
+
+  // 2. §4 Logit 放大倍数 k 对比实验台
+  const ks = LabMath.linspace(1, 1000, 400);
+
+  Lab.playground("#pg-lse", {
+    title: "Logit 尺度缩放实验：z(k) = k · [1.0, 0.8, -0.5] 的交叉熵损失对比",
+    params: [
+      { name: "k", label: "放大倍数 $k$", min: 1, max: 1000, step: 1, value: 100, fmt: (v) => String(Math.round(v)) },
+    ],
+    selects: [
+      {
+        name: "y",
+        label: "真实目标类别 $y$",
+        options: [
+          [2, "y = 2（最小项 -0.5k · 同时观察下溢截断与上溢 NaN）"],
+          [1, "y = 1（次大项 +0.8k · 温和下溢 + k>709 爆 NaN）"],
+          [0, "y = 0（最大项 +1.0k · 真实损失趋近 0，朴素法在 k>709 仍爆 NaN！）"],
+        ],
+        value: 2,
+      },
+    ],
+    buttons: [
+      { label: "默认对照点 (k=100)", primary: true, onClick: (_p, ctl) => { ctl.set("y", 2); ctl.set("k", 100); } },
+      { label: "温和安全区 (k=1)", onClick: (_p, ctl) => { ctl.set("y", 2); ctl.set("k", 1); } },
+      { label: "FP16 上溢临界 (k=12)", onClick: (_p, ctl) => { ctl.set("y", 2); ctl.set("k", 12); } },
+      { label: "FP32 上溢临界 (k=90)", onClick: (_p, ctl) => { ctl.set("y", 2); ctl.set("k", 90); } },
+      { label: "FP64 崩盘区 (k=800 · 朴素爆 NaN)", onClick: (_p, ctl) => { ctl.set("y", 2); ctl.set("k", 800); } },
+    ],
+    caption: "紫实线为工业级 Log-Sum-Exp 融合公式（全程平滑精准）；橙虚线为朴素 exp + log(p + 1e-12)（先在 27.63 假死截断，再在 k > 709.78 彻底断线变为 NaN）。",
+    render(p, out) {
+      out.innerHTML = '<div class="chart-host"></div>';
+      const yIdx = Number(p.y);
+      const kCur = p.k;
+      const ysLse = ks.map((kv) => lseLoss(baseV.map((v) => kv * v), yIdx));
+      const ysNaive = ks.map((kv) => naiveOneHotEpsLoss(baseV.map((v) => kv * v), yIdx));
+
+      const zCur = baseV.map((v) => kCur * v);
+      const curLse = lseLoss(zCur, yIdx);
+      const curNaive = naiveOneHotEpsLoss(zCur, yIdx);
+      const probsCur = LabMath.softmax(zCur);
+      const gradCur = probsCur.map((pr, i) => pr - (i === yIdx ? 1.0 : 0.0));
+
+      const yMax = yIdx === 0 ? 30 : yIdx === 1 ? 220 : 1600;
+      const c = LabPlot.chart(out.querySelector(".chart-host"), {
+        x: [0, 1000],
+        y: [-yMax * 0.04, yMax],
+        xLabel: "Logit 放大倍数 k",
+        yLabel: "交叉熵损失 L(z, y)",
+        height: 300,
+      })
+        .line(ks, ysLse, { label: "Log-Sum-Exp 融合公式 (F.cross_entropy)", color: 1 })
+        .line(ks, ysNaive, { label: "朴素 exp + log(p + 1e-12)", color: 2, dash: true })
+        .vline(88.72, { color: 3, label: "FP32 上溢 (88.7)" })
+        .vline(709.78, { color: 4, label: "FP64 上溢 (709.8 → NaN)" })
+        .point(kCur, curLse, { color: 1, label: `LSE=${Lab.fmt(curLse, 2)}` });
+
+      if (isFinite(curNaive)) {
+        c.point(kCur, curNaive, { color: 2 });
+      }
+      c.draw();
+
+      const naiveStr = isFinite(curNaive)
+        ? Lab.fmt(curNaive, 6)
+        : '<span style="color:var(--c-warn)">NaN（exp 上溢 inf/inf！）</span>';
+      const errStr = isFinite(curNaive)
+        ? Lab.fmt(Math.abs(curLse - curNaive), 6)
+        : '<span style="color:var(--c-warn)">∞（整网权重报废）</span>';
+
+      Lab.readout(out, {
+        "当前输入 $z(k)$": zCur,
+        "Log-Sum-Exp 精确损失": curLse,
+        "朴素 $+10^{-12}$ 损失": naiveStr,
+        "朴素写法绝对误差": errStr,
+        "精确反向梯度 $p_y - 1$": gradCur[yIdx],
+      }, 6);
+    },
+  });
+});
+</script>
+</body>
+</html>

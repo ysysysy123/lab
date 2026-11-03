@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>从 Sigmoid 到 Softmax + 交叉熵灵魂梯度 p − y · w01-自动微分与P1</title>
+<meta name="lab:topic" content="w01-自动微分与P1">
+<meta name="lab:num" content="2">
+<meta name="lab:step" content="2">
+<meta name="lab:date" content="2026-11-02">
+<link rel="stylesheet" href="../../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body>
+<div class="lab-layout">
+  <nav id="lab-toc" aria-label="目录"></nav>
+
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../../index.html">📚 学习地图</a> / <a href="../../index.html#w01-自动微分与P1">w01-自动微分与P1</a> / 第 2 课</div>
+      <h1>从 Sigmoid 到 Softmax + 交叉熵灵魂梯度 $p - y$</h1>
+      <p class="subtitle">为什么全世界的分类网络与大语言模型词表预测，反向传播起点都浓缩成短短三个字符 $p - y$？</p>
+      <div class="chips">
+        <span class="chip">⏱ 约 20 分钟</span>
+        <span class="chip">🧭 计划步骤 2 / 5</span>
+        <span class="chip">📅 2026-11-02</span>
+        <span class="chip">💻 projects/p1-tiny-llm/src/w01_mlp_mnist.py</span>
+        <span class="chip">📓 04-LLM大模型/教学/07-输出层与损失函数.ipynb</span>
+      </div>
+    </header>
+
+    <div class="win">
+      <div class="icon">🎯</div>
+      <div>
+        <h4>本课收获</h4>
+        <p>给定任意 3 类 Logits（如 $z = [2.0, 1.0, -1.0]$），能亲手算出 Softmax 概率 $p$、交叉熵损失 $L = -\ln p_y$ 与反向梯度 $p - y$；用 4 步对数差推导证出为什么指数导数与对数导数会完美约分，并看懂 <code>w01_mlp_mnist.py</code> 里的 <code>dZ2 = (P - Y) / B</code>。</p>
+      </div>
+    </div>
+
+    <div class="prereq">
+      <b>前置依赖：</b>
+      <span class="known">✓ 复合函数链式法则与标量反向传播（第 1 课 <code>Value.backward()</code>）</span> ·
+      <span class="gap">△ 自然对数与指数基本求导 $(\ln u)' = u'/u,\ (e^u)' = e^u u'$（本课 §3 直接带推）</span>
+    </div>
+
+    <!-- ========== §1 痛点与直觉 ========== -->
+    <section>
+      <h2><span class="num">01</span>痛点与直觉：为什么分类任务不用 Sigmoid + MSE？</h2>
+      <p>很多初学者第一次写分类器时，会自然地把回归任务里的均方误差（MSE）搬过来：先把线性打分 $z$ 用 $\sigma(z) = \frac{1}{1+e^{-z}}$ 压到 $(0, 1)$ 区间，再最小化 $L_{\text{MSE}} = \frac{1}{2}(\sigma(z) - y)^2$。看似顺理成章，一旦开始梯度下降却会出现诡异的<strong>「越错越学不动」</strong>假死现象。</p>
+
+      <aside class="sidenote">
+        <b>从 Sigmoid 到 Softmax 只有一步之遥</b>：二分类里正类概率 $\sigma(z) = \frac{1}{1+e^{-z}} = \frac{e^z}{e^z + e^0}$，本质就是「正类打分 $z$」与「负类基准分 $0$」做两类 Softmax！推广到 $K$ 个类别（如 MNIST 10 个数字、MiniMind 32,000 个词元），就是把每个类别的原始打分 $z_i$ 取指数再归一化：$p_i = \frac{e^{z_i}}{\sum_{j=1}^K e^{z_j}}$。
+      </aside>
+
+      <p>直接拿一组真实数字拆穿病根——假设真实标签 $y = 1$，而模型当前预测错得离谱，给出了 $z = -5.0$：</p>
+      <ul>
+        <li>前向输出 $\sigma(-5.0) \approx 0.006693$，局部斜率已经掉进左侧平坦饱和区：$\sigma'(-5.0) = \sigma(1-\sigma) \approx 0.006648$。</li>
+        <li><strong>若用 MSE</strong>：链式法则给出 $\frac{\partial L_{\text{MSE}}}{\partial z} = (\sigma - y)\cdot\sigma(1-\sigma) = (-0.993307)\times 0.006648 \approx \mathbf{-0.006604}$！对比半蒙半猜的 $z = 0$（梯度为 $-0.125$），<strong>犯错更离谱时，梯度反而萎缩了近 19 倍</strong>——饱和导数 $\sigma'(z)$ 像一脚刹车把误差信号掐死了。</li>
+        <li><strong>若换二元交叉熵（BCE）</strong>：$L_{\text{BCE}} = -[y\ln\sigma + (1-y)\ln(1-\sigma)]$。外层对 $\sigma$ 求导自带分母 $\frac{\sigma - y}{\sigma(1-\sigma)}$，与内层 $\sigma'(z) = \sigma(1-\sigma)$ <strong>分子分母当场一刀约掉</strong>！对 $z$ 的梯度直接化简为 $\sigma - y \approx \mathbf{-0.993307}$，推力比 MSE 猛 <strong>150.4 倍</strong>！</li>
+      </ul>
+
+      <div class="callout intuition">
+        <span class="ct">指数与对数的「天作之合」</span>
+        <p>Sigmoid / Softmax 里藏着指数 $e^z$，交叉熵里藏着负对数 $-\ln p$。对数把乘除拆成加减，求导时又刚好把 Sigmoid / Softmax 的饱和导数项抵消干净，只留下最纯粹的物理量——<strong>「模型预测概率 $p$ 与真实目标 $y$ 的差值」</strong>：错得越远推力越猛，猜对时（$p \to y$）自动平滑刹车。</p>
+      </div>
+    </section>
+
+    <!-- ========== §2 具体数字手算 ========== -->
+    <section>
+      <h2><span class="num">02</span>具体数字手算：3 分类极小算例全追踪</h2>
+      <p>进入多分类（$K = 3$，比如识别「猫 / 狗 / 兔」）。设模型最后一层输出的原始打分（Logits）为 $z = [2.0,\ 1.0,\ -1.0]$，真实类别是第 $0$ 类（即 $y = 0$，对应 One-hot 目标向量 $y_{\text{vec}} = [1,\ 0,\ 0]$）。我们把前向与反向的每一个数字摊开算清：</p>
+
+      <table class="shape">
+        <tr><th>计算阶段</th><th>公式 / 形状</th><th>精确数值（经 Python 金标准校验）</th></tr>
+        <tr><td>原始打分 <code>z</code></td><td>(3,) Logits</td><td>$[2.000000,\; 1.000000,\; -1.000000]$（未归一化，可正可负）</td></tr>
+        <tr><td>取指数 <code>exp(z)</code></td><td>$e^{z_i} > 0$</td><td>$[7.389056,\; 2.718282,\; 0.367879]$，总和 $\sum_j e^{z_j} = 10.475217$</td></tr>
+        <tr><td>Softmax 概率 <code>p</code></td><td>$p_i = e^{z_i} / \sum_j e^{z_j}$</td><td>$[0.705385,\; 0.259496,\; 0.035119]$（严格非负且 $\sum_i p_i = 1$）</td></tr>
+        <tr><td>真实目标 <code>y_vec</code></td><td>One-hot (3,)</td><td>$[1.000000,\; 0.000000,\; 0.000000]$（正确类置 $1$，其余置 $0$）</td></tr>
+        <tr><td>交叉熵损失 <code>L</code></td><td>$-\ln p_0$ (标量)</td><td>$-\ln(0.70538451) = \mathbf{0.349012}$（只看正确类的负对数似然）</td></tr>
+        <tr><td>反向梯度 <code>∂L/∂z</code></td><td>$p - y_{\text{vec}}$ (3,)</td><td>$[\mathbf{-0.294615},\; \mathbf{+0.259496},\; \mathbf{+0.035119}]$</td></tr>
+      </table>
+
+      <div class="callout principle">
+        <span class="ct">读懂 $[-0.2946,\ +0.2595,\ +0.0351]$ 背后的三条物理直觉</span>
+        <ol>
+          <li><strong>正确类 $z_0$ 的梯度必为负（$p_0 - 1 = -0.2946$）</strong>：因为梯度下降执行 $z_0 \leftarrow z_0 - \eta g_0$，减去一个负数等于<strong>向上推高正确类的分数</strong>！若取步长 $\eta = 0.5$，$z_0$ 会从 $2.0$ 升至 $2.1473$。</li>
+          <li><strong>错误类 $z_1, z_2$ 的梯度必为正（$p_i - 0 = p_i$），且按「抢占概率比例」精准打压</strong>：$z_1$ 抢走了 $25.95\%$ 的概率，就挨 $+0.2595$ 的重锤；$z_2$ 只占 $3.51\%$ 几乎没捣乱，就只受 $+0.0351$ 的轻推。一步更新后，$p_0$ 立刻从 $70.54\%$ 涨到 $75.70\%$，损失 $L$ 从 $0.3490$ 降到 $0.2784$。</li>
+          <li><strong>零和守恒力场</strong>：把三个梯度加起来：$-0.294615 + 0.259496 + 0.035119 = \sum_{i} p_i - 1 = \mathbf{0.0}$！向上拔高正确类的总力道，分毫不差等于向下压低所有错误类的力道之和（这也对应 Softmax 平移不变性：所有 $z_i$ 同加常数 $c$ 概率不变，故方向导数 $(1,1,1)\cdot \nabla_z L = 0$）。</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ========== §3 分步符号推导 ========== -->
+    <section>
+      <h2><span class="num">03</span>分步符号推导：四步证出灵魂公式 $p - y$</h2>
+      <p>面试手撕时千万不要一上来硬套商法则 $\left(\frac{u}{v}\right)' = \frac{u'v - uv'}{v^2}$！秘诀是<strong>「先用对数把除法拆成减法，再求偏导」</strong>，四步就能极其优雅地走完全程（按 <kbd>→</kbd> 逐步展开保留）：</p>
+
+      <div class="lab-stepper" id="deriv-ce" data-title="Softmax + 交叉熵梯度 ∂L/∂z = p − y 四步推导" data-mode="accumulate">
+        <div class="step" data-title="先拆对数，避开商法则噩梦">
+          <p>设共有 $K$ 个类别，当前样本真实类别索引为 $y \in \{1,\dots,K\}$。单样本交叉熵只挑出真实类 $y$ 的负对数概率，利用 $\ln(A/B) = \ln A - \ln B$ 与 $\ln(e^{z_y}) = z_y$ 直接展开：</p>
+          <p>$$L = -\ln p_y = -\ln \frac{e^{z_y}}{\sum_{j=1}^K e^{z_j}} = \underbrace{\ln \sum_{j=1}^K e^{z_j}}_{\text{LogSumExp 项}} - z_y$$</p>
+          <p class="small muted">这一步用了：对数商法则。原本棘手的分式瞬间变成了「一项对数和」减去「一项线性变量 $z_y$」！</p>
+        </div>
+
+        <div class="step" data-title="情形 A：对正确类打分 z_y 求偏导（i = y）">
+          <p>对第一项套复合函数链式法则 $\frac{\partial}{\partial z_y}\ln u = \frac{1}{u}\frac{\partial u}{\partial z_y}$（求和号 $\sum_{j=1}^K e^{z_j}$ 里只有 $j=y$ 那一项含 $z_y$，导数为 $e^{z_y}$）；第二项 $-z_y$ 对 $z_y$ 的偏导是 $-1$：</p>
+          <p>$$\frac{\partial L}{\partial z_y} = \frac{1}{\sum_{j=1}^K e^{z_j}} \cdot e^{z_y} - 1 = p_y - 1$$</p>
+        </div>
+
+        <div class="step" data-title="情形 B：对任一错误类打分 z_i 求偏导（i ≠ y）">
+          <p>当 $i \neq y$ 时，第一项求和号里依然只有 $j=i$ 那一项含 $z_i$，导数为 $e^{z_i}$；而第二项 $-z_y$ 与 $z_i$ 无关，偏导直接为 $0$：</p>
+          <p>$$\frac{\partial L}{\partial z_i} = \frac{1}{\sum_{j=1}^K e^{z_j}} \cdot e^{z_i} - 0 = p_i \qquad (i \neq y)$$</p>
+        </div>
+
+        <div class="step" data-title="用 One-hot 合并 + 推广至 Mini-batch 矩阵形式">
+          <p>引入 One-hot 向量 $y_i = \mathbb{1}[i = y]$（当 $i=y$ 时为 $1$，否则为 $0$），上面两种情形完美合二为一：</p>
+          <p>$$\frac{\partial L}{\partial z_i} = p_i - \mathbb{1}[i = y] = p_i - y_i$$</p>
+          <p>当一个 Batch 有 $B$ 个样本且总损失取均值 $\bar{L} = \frac{1}{B}\sum_{b=1}^B L^{(b)}$ 时，把 $B$ 行拼成矩阵即得反向传播第一棒：</p>
+          <p>$$\mathrm{d}Z = \frac{\partial \bar{L}}{\partial Z} = \frac{1}{B}(P - Y)$$</p>
+        </div>
+      </div>
+
+      <div class="eq-explain">
+        <span class="eq-tag">(批量灵魂梯度)</span>
+        <p>$$\mathrm{d}Z_2 = \frac{1}{B}(P - Y) \in \mathbb{R}^{B \times K}$$</p>
+        <dl>
+          <dt>$P \in \mathbb{R}^{B \times K}$</dt><dd>Softmax 输出概率矩阵，每行是一个样本在 $K$ 个类别上的预测分布（行和为 $1$）</dd>
+          <dt>$Y \in \mathbb{R}^{B \times K}$</dt><dd>目标分布矩阵：标准多分类下为 One-hot；在大模型<strong>标签平滑（Label Smoothing）</strong>或<strong>知识蒸馏软标签</strong>下，只要满足每行 $\sum_j Y_{b,j} = 1$，此公式依然<strong>一字不改原样成立</strong>！</dd>
+          <dt>$\frac{1}{B}$</dt><dd>批量平均因子，对应前向 <code>loss = np.mean(...)</code>。若漏除 $B$，梯度幅值会随 <code>batch_size</code> 暴涨 $B$ 倍！</dd>
+        </dl>
+      </div>
+
+      <details class="reveal deep">
+        <summary>选读：从 Softmax 雅可比矩阵 $\frac{\partial p_j}{\partial z_i} = p_j(\delta_{ij} - p_i)$ 再证一遍（为第 3 周 Attention 反向传播埋伏笔！）</summary>
+        <div>
+          <p>如果后续算子不是交叉熵——例如<strong>第 3 周 Transformer 自注意力</strong> $O = \text{softmax}(S) V$，不能跟 $-\ln$ 合并化简时，我们就必须单独求出 Softmax 本身的雅可比矩阵（Jacobian）：</p>
+          <p>对 $p_j = \frac{e^{z_j}}{\Sigma}$（记 $\Sigma = \sum_k e^{z_k}$）应用商法则：</p>
+          <ul>
+            <li>当 $i = j$（对角线）：$\frac{\partial p_i}{\partial z_i} = \frac{e^{z_i}\Sigma - e^{z_i}\cdot e^{z_i}}{\Sigma^2} = p_i - p_i^2 = p_i(1 - p_i)$。</li>
+            <li>当 $i \neq j$（非对角线）：分子 $e^{z_j}$ 对 $z_i$ 导数为 $0$，故 $\frac{\partial p_j}{\partial z_i} = \frac{0 - e^{z_j}\cdot e^{z_i}}{\Sigma^2} = -p_j p_i$。</li>
+          </ul>
+          <p>用克罗内克符号 $\delta_{ij} = \mathbb{1}[i=j]$ 统一写成：$$\frac{\partial p_j}{\partial z_i} = p_j(\delta_{ij} - p_i)$$</p>
+          <p>现在把它代入一般分布交叉熵 $L = -\sum_{j=1}^K y_j \ln p_j$（其中 $\sum_j y_j = 1$）的链式法则：</p>
+          <p>$$\frac{\partial L}{\partial z_i} = \sum_{j=1}^K \frac{\partial L}{\partial p_j}\frac{\partial p_j}{\partial z_i} = \sum_{j=1}^K \left(-\frac{y_j}{p_j}\right) p_j(\delta_{ij} - p_i) = -\sum_{j=1}^K y_j(\delta_{ij} - p_i) = -y_i + p_i\underbrace{\sum_{j=1}^K y_j}_{=1} = p_i - y_i$$</p>
+          <p>看！$-\frac{1}{p_j}$ 与雅可比外面的 $p_j$ 像齿轮一样严丝合缝消掉了！而在 Self-Attention 中，已知上游梯度 $\mathrm{d}P$，根据同一雅可比就能一行写出注意力分数梯度 $\mathrm{d}S = P \odot \big(\mathrm{d}P - \text{rowsum}(\mathrm{d}P \odot P)\big)$——这就是 FlashAttention 反向核的数学心脏。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §4 代码讲解 ========== -->
+    <section>
+      <h2><span class="num">04</span>代码讲解：<code>w01_mlp_mnist.py</code> 输出层与损失梯度</h2>
+      <p>下面截取本仓 P1 实战脚本 <code>projects/p1-tiny-llm/src/w01_mlp_mnist.py</code> 第 55–105 行真实源码。点击右侧讲解卡片定位每一处工程防坑细节：</p>
+
+      <div class="code-walk" data-dim>
+<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="55" data-href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code class="language-python">    @staticmethod
+    def softmax(z: np.ndarray) -&gt; np.ndarray:
+        # 防数值溢出减去 max
+        shift_z = z - np.max(z, axis=1, keepdims=True)
+        exp_z = np.exp(shift_z)
+        return exp_z / np.sum(exp_z, axis=1, keepdims=True)
+
+    def forward(self, X: np.ndarray) -&gt; tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """
+        前向传播:
+        X: (B, 784)
+        返回: (Z1, A1, Z2, P)
+        """
+        Z1 = X @ self.W1 + self.b1           # (B, hidden_dim)
+        A1 = np.maximum(0, Z1)                # ReLU: (B, hidden_dim)
+        Z2 = A1 @ self.W2 + self.b2          # (B, out_dim)
+        P = self.softmax(Z2)                 # Softmax 概率分布: (B, out_dim)
+        return Z1, A1, Z2, P
+
+    def train_step(self, X: np.ndarray, y: np.ndarray) -&gt; float:
+        """
+        X: (B, 784)
+        y: (B,) 类别索引 0~9
+        """
+        B = X.shape[0]
+        Z1, A1, Z2, P = self.forward(X)
+
+        # 1. 计算交叉熵损失
+        log_likelihood = -np.log(P[np.arange(B), y] + 1e-12)
+        loss = float(np.mean(log_likelihood))
+
+        # 2. 构造 One-Hot 标签 Y
+        Y = np.zeros_like(P)
+        Y[np.arange(B), y] = 1.0
+
+        # =================================================================
+        # TODO(human): 手撕矩阵反向传播 (4 行核心数学公式)
+        # 提示:
+        # dZ2 = (P - Y) / B                       # Softmax+CrossEntropy 优雅导数: (B, 10)
+        # dW2 = ...                               # (hidden_dim, 10)
+        # db2 = ...                               # (1, 10)
+        # dA1 = ...                               # (B, hidden_dim)
+        # dZ1 = dA1 * (Z1 &gt; 0)                    # ReLU 局部导数: (B, hidden_dim)
+        # dW1 = ...                               # (in_dim, hidden_dim)
+        # db1 = ...                               # (1, hidden_dim)
+        # =================================================================
+        # 下面 7 行请你在弄清维度后补全，跑通训练：
+        dZ2 = (P - Y) / B
+        dW2 = A1.T @ dZ2
+        db2 = np.sum(dZ2, axis=0, keepdims=True)</code></pre>
+        <ol class="walk">
+          <li data-lines="56-60"><strong>平移防溢出 Softmax</strong>：若某行 logit 达到 $1000$，<code>np.exp(1000)</code> 会直接溢出成 <code>inf</code>。先减去每行最大值 $m = \max_j z_j$，等价于分子分母同乘 $e^{-m}$，概率值分毫不差，且所有指数项 $\le e^0 = 1$！注意 <code>keepdims=True</code> 保持 <code>(B, 1)</code> 才能按行广播。</li>
+          <li data-lines="70-71"><strong>Logits <code>Z2</code> 与概率 <code>P</code> 分离</strong>：<code>Z2</code> 形状 <code>(B, 10)</code> 是线性层原始打分（不要在 <code>Z2</code> 后再套 ReLU，否则负数打分全被截断成 0！）；<code>P</code> 存下前向概率供反向直接复用。</li>
+          <li data-lines="83-84"><strong>花式索引挑出真实类概率</strong>：<code>P[np.arange(B), y]</code> 一次性取出第 $b$ 行第 $y_b$ 列元素，得到形状 <code>(B,)</code> 的正确类概率向量，加 <code>1e-12</code> 防止 <code>log(0)</code> 产生 <code>NaN</code>（第 4 课会升级为工业级 <code>logsumexp</code> 融合算子）。</li>
+          <li data-lines="87-88"><strong>两行构造 One-hot 矩阵 <code>Y</code></strong>：用 <code>np.zeros_like(P)</code> 创建 <code>(B, 10)</code> 全零阵，再用相同的花式索引把每行真实数字位置填为 <code>1.0</code>。</li>
+          <li data-lines="102"><strong>反向传播点火 <code>dZ2 = (P - Y) / B</code></strong>：直接落地 §3 推导结果！无需显式构造 $10\times 10$ 雅可比矩阵，一行数组减法同时完成 Softmax 与 Cross-Entropy 两层回传，除以 <code>B</code> 对齐第 84 行的 <code>np.mean</code>。</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ========== §5 交互实验 ========== -->
+    <section>
+      <h2 id="sec-pg"><span class="num">05</span>交互实验：拨动 Logits 与温度 $\tau$，直击灵魂梯度与饱和对比</h2>
+      <p>下方第一个实验台默认加载 §2 手算算例 $z = [2.0, 1.0, -1.0],\ y = 0,\ \tau = 1.0$。调节任意类别打分或温度系数 $\tau$（注：带温度 $p = \text{softmax}(z/\tau)$ 时，链式法则多乘一个 $1/\tau$，即 $\frac{\partial L}{\partial z} = \frac{p - y}{\tau}$），观察左图概率分布、右图反向力场，以及底部与中心差分数值梯度的实时零误差比对：</p>
+
+      <div id="pg-softmax"></div>
+
+      <p class="small muted">💡 <strong>三个必试动作</strong>：① 把 $z_0$ 往左拖到 <code>-2.0</code>（让模型严重判错），看 $z_0$ 的负梯度柱瞬间拉满到接近 <code>-1.0</code> 全力抢救；② 把温度 $\tau$ 调小到 <code>0.3</code>（低温尖锐化，LLM Greedy 采样极限）对比调大到 <code>3.0</code>（高温平坦化，知识蒸馏软化分布）；③ 切换真实类别 $y$ 为类别 1 或 2，观察负向拔高柱如何立刻转移到新目标类，而三根梯度柱代数和永远等于 <code>0</code>！</p>
+
+      <h3>直观对比：为什么 Sigmoid + MSE 在严重误判区会「梯度猝死」？</h3>
+      <p>固定真实标签 $y = 1$，横轴遍历线性输出 $z \in [-6, 4]$。紫实线是交叉熵梯度 $\sigma(z) - 1$，橙虚线是 MSE 梯度 $(\sigma(z)-1)\sigma(z)(1-\sigma(z))$：</p>
+
+      <div class="lab-figure">
+        <div id="fig-mse-bce"></div>
+        <figcaption>当真实 $y=1$ 而预测落在左侧深水区 $z = -5$ 时：交叉熵给出 $-0.9933$ 的满格纠偏推力，而 MSE 因乘上 $\sigma'(-5)\approx 0.0066$ 萎缩到 $-0.0066$（相差 150.4 倍！）。</figcaption>
+      </div>
+    </section>
+
+    <!-- ========== §6 小结 ========== -->
+    <section>
+      <h2><span class="num">06</span>小结</h2>
+      <div class="callout summary">
+        <span class="ct">本课浓缩四句话</span>
+        <ul>
+          <li><strong>不用 MSE 做分类的根因</strong>：MSE 求导保留了激活函数导数 $\sigma'(z) = \sigma(1-\sigma)$，当模型严重判错掉进饱和区时梯度趋近于 $0$，越错越学不动。</li>
+          <li><strong>先拆对数再求导</strong>：$L = -\ln\frac{e^{z_y}}{\sum_j e^{z_j}} = \ln\sum_j e^{z_j} - z_y$，无需商法则，直接得出正确类偏导 $p_y - 1$、错误类偏导 $p_i$。</li>
+          <li><strong>灵魂梯度公式</strong>：单样本 $\frac{\partial L}{\partial z} = p - y$，批量平均 $\mathrm{d}Z = \frac{1}{B}(P - Y)$，且每样本梯度分量之和恒为 $\sum_i (p_i - y_i) = 0$。</li>
+          <li><strong>工程防溢出底线</strong>：手写 Softmax 必须先减行最大值 <code>z - np.max(z, axis=1, keepdims=True)</code>，绝不裸跑 <code>np.exp(z)</code>。</li>
+        </ul>
+      </div>
+
+      <div class="callout interview">
+        <span class="ct">30 秒面试表达模板</span>
+        <p>「分类任务坚持用 Softmax 搭配交叉熵而非 MSE，核心是为了消除激活饱和区的梯度消失：交叉熵里的负对数导数 $-1/p_y$ 恰好与 Softmax 导数里的 $p_y$ 因子约分抵消，把对 logits 的梯度化简为极其干净的 $\frac{1}{B}(P - Y)$。它的物理意义非常直观：预测越离谱，$(p_y - 1)$ 的绝对值越接近 1，纠偏推力越强；同时错误类别严格按其误抢占的概率比例 $p_i$ 被向下压制，所有类别梯度之和恒为 0。」</p>
+      </div>
+    </section>
+
+    <!-- ========== §7 可选自测与面试追问 ========== -->
+    <section>
+      <h2><span class="num">07</span>想检验一下？（可选 · 点击展开）</h2>
+
+      <details class="reveal q">
+        <summary>1. 如果把三个类别的 logits $[2.0, 1.0, -1.0]$ 同时加上 $100$ 变成 $[102.0, 101.0, 99.0]$，概率 $p$、损失 $L$ 和梯度 $p - y$ 会变吗？裸写 <code>np.exp(z)</code> 何时会炸？</summary>
+        <div>
+          <p><strong>数学上完全不变！</strong>因为 $\frac{e^{z_i + c}}{\sum_j e^{z_j + c}} = \frac{e^c e^{z_i}}{e^c \sum_j e^{z_j}} = p_i$，所以概率 $p$、损失 $L$ 与梯度 $p - y$ 连最后一位小数都不变。但在 IEEE-754 双精度浮点数（FP64）中，$e^{710}$ 就会溢出为 <code>inf</code>（在训练大模型常用的 FP16 中，$e^{11.1} > 65504$ 就会溢出！），导致 <code>inf / inf = nan</code> 瞬间训崩——这就是减去 $\max_j z_j$ 不可省略的原因。</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>2. 🎤 面试高频追问：大模型和视觉训练常加 Label Smoothing（标签平滑，系数 $\epsilon$），此时平滑目标是什么？对 logits 的梯度公式要怎么改？</summary>
+        <div>
+          <p>设类别数为 $K$（或词表大小 $V$），平滑系数为 $\epsilon \in (0, 1)$。标签平滑把原本独霸 $1$ 的 One-hot 目标 $y$ 抽出 $\epsilon$ 的概率质量，均匀撒给全部 $K$ 个类：</p>
+          <p>$$\tilde{y}_i = (1 - \epsilon) y_i + \frac{\epsilon}{K}$$</p>
+          <p>例如本课 3 分类算例取 $\epsilon = 0.1,\ y=0$，目标从 $[1, 0, 0]$ 变为 $\tilde{y} = [0.933333, 0.033333, 0.033333]$。<strong>最妙的是梯度公式一个结构都不用改</strong>——因为在 $L = -\sum_{j=1}^K \tilde{y}_j \ln p_j$ 中，只要目标分布满足 $\sum_{j=1}^K \tilde{y}_j = (1-\epsilon) + K\cdot\frac{\epsilon}{K} = 1$，链式推导：
+          $$\frac{\partial L}{\partial z_i} = \frac{\partial}{\partial z_i}\left(\ln\sum_k e^{z_k}\underbrace{\sum_{j=1}^K \tilde{y}_j}_{=1} - \sum_{j=1}^K \tilde{y}_j z_j\right) = p_i - \tilde{y}_i = p_i - \left[(1-\epsilon)y_i + \frac{\epsilon}{K}\right]$$</p>
+          <p>物理含义：当正确类预测概率 $p_y$ 达到 $1 - \epsilon + \epsilon/K$（上例中约 $93.33\%$）时梯度就归零收手，不再逼迫正确类 logit 飙向 $+\infty$，从而防止模型过度自信（Over-confidence）、提升泛化与校准度！</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>3. 🎤 面试防坑追问：在 PyTorch 里定义分类网络时，如果在最后一层 <code>nn.Linear</code> 后面多手写了一层 <code>F.softmax(x, dim=-1)</code>，再喂给 <code>nn.CrossEntropyLoss()</code>，会发生什么后果？</summary>
+        <div>
+          <p><strong>等于做了「双重 Softmax」，训练会严重退化甚至卡死！</strong>因为 PyTorch 的 <code>nn.CrossEntropyLoss</code> 内部已经融合了 <code>F.log_softmax + F.nll_loss</code>，它期望的输入是未归一化的原始 <code>logits</code> $\in (-\infty, +\infty)$。如果你提前算过一次 Softmax，输入全被压缩在 $[0, 1]$ 区间：即使某个类概率高达 $1.0$、其余为 $0.0$，再过一次 Softmax 后最大概率也只有 $\frac{e^1}{e^1 + (K-1)e^0}$（在 10 分类 MNIST 上最高不超过 $e/(e+9) \approx 23.2\%$！），损失有极高的下界且梯度被二次饱和严重削弱。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §8 延伸阅读 ========== -->
+    <section>
+      <h2><span class="num">08</span>延伸阅读与对照源码</h2>
+      <div class="callout source">
+        <span class="ct">首选资料</span>
+        <p>1. 本仓实战源码：<a href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code>projects/p1-tiny-llm/src/w01_mlp_mnist.py</code></a>（第 55–105 行，下一课我们将接着把第 103–109 行的矩阵梯度转置规律彻底打通；配套速查卡：<a href="../../reference/matrix-bp-softmax-cheatsheet.html">矩阵 BP 与 Softmax 速查卡</a>）。<br>
+        2. 上层 AI Tutorial 对应章节：<code>03-深度学习/模型笔记/01-多层感知机与反向传播.ipynb</code>（Cell#7, 12）与 <code>04-LLM大模型/教学/07-输出层与损失函数.ipynb</code>（Cell#4, 6, 7：看大模型词表层 Weight Tying + Label Smoothing 完整实现）。</p>
+      </div>
+    </section>
+
+    <!-- LAB:NAV -->
+    <nav class="lab-nav"><a class="prev" href="0001-scalar-autograd-chain.html"><small>← 上一课</small>标量计算图与 Value.backward() 三条铁律</a><a class="next" href="0003-numpy-matrix-bp-shapes.html"><small>下一课 →</small>从标量到矩阵：NumPy 两层 MLP 批量反向传播与维度对齐</a></nav>
+    <!-- /LAB:NAV -->
+
+    <div class="ask-ai">💬 哪里想再掰开揉碎聊？直接说：<code>继续</code>（进入第 3 课：NumPy 矩阵反向传播与 Shape 对齐铁律）· <code>详细推导</code> · <code>讲解代码</code> · <code>可视化</code> · <code>整理笔记</code></div>
+    <footer class="lab-footer">生成于 2026-11-02 · lab-teach · 数值来自 Python 金标准（NumpyMLP + PyTorch autograd 双重校验）</footer>
+  </main>
+
+  <aside class="lab-margin"></aside>
+</div>
+
+<!-- LAB:GOLDEN -->
+<script type="application/json" id="lab-golden">{"bad_z": -5.0, "bad_sig": 0.00669285, "bad_sig_deriv": 0.00664806, "bad_mse_loss": 0.49332955, "bad_mse_grad": -0.00660356, "bad_bce_loss": 5.00671535, "bad_bce_grad": -0.99330715, "bad_grad_ratio": 150.4199, "zero_mse_grad": -0.125, "zero_bce_grad": -0.5, "ex_z": [2.0, 1.0, -1.0], "ex_exp": [7.3890561, 2.71828183, 0.36787944], "ex_sum_exp": 10.47521737, "ex_p": [0.70538451, 0.25949646, 0.03511903], "ex_loss": 0.34901222, "ex_gz": [-0.29461549, 0.25949646, 0.03511903], "ex_num_gz": [-0.29461549, 0.25949646, 0.03511903], "ex_gz_sum": 0.0, "sgd_z_after": [2.14730774, 0.87025177, -1.01755951], "sgd_p_after": [0.75695826, 0.21108315, 0.03195859], "sgd_loss_after": 0.27844716, "ls_target": [0.93333333, 0.03333333, 0.03333333], "ls_gz": [-0.22794882, 0.22616313, 0.00178569], "ls_loss": 0.48234555, "_meta": {"script": "学习/w01-自动微分与P1/verify_0002.py", "python": "test", "generated": "2026-11-03"}}</script>
+<!-- /LAB:GOLDEN -->
+
+<script src="../../../.agents/skills/lab-teach/assets/lab.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-math.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-plot.js"></script>
+<script>
+Lab.ready(() => {
+  // 1. 与 Python 金标准逐项对齐校验（不少于 8 项）
+  const zBad = -5.0;
+  const sigBad = LabMath.sigmoid(zBad);
+  const sigDerivBad = sigBad * (1 - sigBad);
+  const mseGradBad = (sigBad - 1.0) * sigDerivBad;
+  const bceGradBad = sigBad - 1.0;
+
+  const zEx = [2.0, 1.0, -1.0];
+  const yEx = [1.0, 0.0, 0.0];
+  const pEx = LabMath.softmax(zEx, 1.0);
+  const lossEx = -Math.log(pEx[0]);
+  const gzEx = pEx.map((pi, i) => pi - yEx[i]);
+  const numGzEx = LabMath.numGrad((zv) => -Math.log(LabMath.softmax(zv, 1.0)[0]), zEx, 1e-6);
+
+  const epsLs = 0.1;
+  const ySmooth = yEx.map((yi) => (1 - epsLs) * yi + epsLs / 3.0);
+  const gzSmooth = pEx.map((pi, i) => pi - ySmooth[i]);
+
+  Lab.check("bad_sig", sigBad, undefined, { tol: 1e-7 });
+  Lab.check("bad_mse_grad", mseGradBad, undefined, { tol: 1e-7 });
+  Lab.check("bad_bce_grad", bceGradBad, undefined, { tol: 1e-7 });
+  Lab.check("ex_p", pEx, undefined, { tol: 1e-7, badge: "#sec-pg" });
+  Lab.check("ex_loss", lossEx, undefined, { tol: 1e-7 });
+  Lab.check("ex_gz", gzEx, undefined, { tol: 1e-7 });
+  Lab.check("ex_num_gz", numGzEx, undefined, { tol: 1e-6 });
+  Lab.check("ls_target", ySmooth, undefined, { tol: 1e-7 });
+  Lab.check("ls_gz", gzSmooth, undefined, { tol: 1e-7 });
+
+  // 2. 实验台：调节 3 类 Logits、温度 τ 与真实类别 y
+  const syncSelect = (rootEl, idx) => {
+    const sel = rootEl && rootEl.querySelector("select");
+    if (sel) sel.value = String(idx);
+  };
+
+  Lab.playground("#pg-softmax", {
+    title: "3 分类 Softmax 概率分布 vs 交叉熵灵魂梯度 (p − y) / τ",
+    params: [
+      { name: "z0", label: "类别 0 打分 $z_0$", min: -4.0, max: 4.0, step: 0.1, value: 2.0 },
+      { name: "z1", label: "类别 1 打分 $z_1$", min: -4.0, max: 4.0, step: 0.1, value: 1.0 },
+      { name: "z2", label: "类别 2 打分 $z_2$", min: -4.0, max: 4.0, step: 0.1, value: -1.0 },
+      { name: "tau", label: "温度系数 $\\tau$", min: 0.25, max: 3.0, step: 0.05, value: 1.0 },
+    ],
+    selects: [
+      {
+        name: "y",
+        label: "真实类别标签 $y$",
+        options: [
+          [0, "y = 0（One-hot [1, 0, 0]）"],
+          [1, "y = 1（One-hot [0, 1, 0]）"],
+          [2, "y = 2（One-hot [0, 0, 1]）"],
+        ],
+        value: 0,
+      },
+    ],
+    buttons: [
+      {
+        label: "重置为 §2 手算算例",
+        primary: true,
+        onClick: (_p, ctl) => {
+          ctl.params.y = 0;
+          syncSelect(ctl.out.parentElement, 0);
+          ctl.set("z0", 2.0);
+          ctl.set("z1", 1.0);
+          ctl.set("z2", -1.0);
+          ctl.set("tau", 1.0);
+        },
+      },
+      {
+        label: "模拟严重误判 (z₀ = -2, z₁ = 3)",
+        onClick: (_p, ctl) => {
+          ctl.params.y = 0;
+          syncSelect(ctl.out.parentElement, 0);
+          ctl.set("z0", -2.0);
+          ctl.set("z1", 3.0);
+          ctl.set("z2", 0.5);
+          ctl.set("tau", 1.0);
+        },
+      },
+      {
+        label: "低温尖锐化 (τ = 0.3)",
+        onClick: (_p, ctl) => {
+          ctl.set("tau", 0.3);
+        },
+      },
+      {
+        label: "执行一步 SGD (η = 0.5)",
+        onClick: (p, ctl) => {
+          const z = [p.z0, p.z1, p.z2];
+          const yIdx = Number(p.y) || 0;
+          const pr = LabMath.softmax(z, p.tau);
+          const g = pr.map((pi, i) => (pi - (i === yIdx ? 1 : 0)) / p.tau);
+          const clamp = (v) => Math.max(-4.0, Math.min(4.0, +v.toFixed(4)));
+          ctl.set("z0", clamp(z[0] - 0.5 * g[0]));
+          ctl.set("z1", clamp(z[1] - 0.5 * g[1]));
+          ctl.set("z2", clamp(z[2] - 0.5 * g[2]));
+        },
+      },
+    ],
+    caption: "左图：Softmax 预测概率 $p_i$（橙色高亮为真实类别 $y$）；右图：反向梯度 $\\partial L/\\partial z_i = (p_i - y_i)/\\tau$（负值表示梯度下降会推高该类打分，正值表示打压）。",
+    render(p, out) {
+      out.innerHTML =
+        '<div class="cards" style="margin:6px 0 12px">' +
+          '<div class="card"><div class="small muted" style="margin-bottom:4px;font-weight:600">前向概率分布 p = softmax(z / τ)</div><div class="bar-p"></div></div>' +
+          '<div class="card"><div class="small muted" style="margin-bottom:4px;font-weight:600">反向梯度 ∂L/∂z = (p − y) / τ</div><div class="bar-g"></div></div>' +
+        '</div>';
+
+      const z = [p.z0, p.z1, p.z2];
+      const yIdx = Number(p.y) || 0;
+      const tau = p.tau;
+      const probs = LabMath.softmax(z, tau);
+      const loss = -Math.log(Math.max(probs[yIdx], 1e-15));
+      const grad = probs.map((pi, i) => (pi - (i === yIdx ? 1.0 : 0.0)) / tau);
+      const numG = LabMath.numGrad((zv) => -Math.log(Math.max(LabMath.softmax(zv, tau)[yIdx], 1e-15)), z, 1e-6);
+      const maxErr = Math.max(...grad.map((gi, i) => Math.abs(gi - numG[i])));
+      const gradSum = grad.reduce((a, b) => a + b, 0);
+
+      LabPlot.bars(out.querySelector(".bar-p"), probs, {
+        labels: ["p₀ (类0)", "p₁ (类1)", "p₂ (类2)"],
+        max: 1.08,
+        decimals: 3,
+        highlight: yIdx,
+        color: 1,
+        hlColor: 2,
+        height: 220,
+      });
+
+      const gMaxAbs = Math.max(0.4, ...grad.map((v) => Math.abs(v))) * 1.18;
+      LabPlot.bars(out.querySelector(".bar-g"), grad, {
+        labels: ["∂L/∂z₀", "∂L/∂z₁", "∂L/∂z₂"],
+        max: gMaxAbs,
+        decimals: 3,
+        highlight: yIdx,
+        color: 4,
+        hlColor: 3,
+        height: 220,
+      });
+
+      Lab.readout(out, {
+        "概率 $p$": probs,
+        "交叉熵 $L = -\\ln p_y$": loss,
+        "解析梯度 $\\partial L/\\partial z$": grad,
+        "中心差分 $g_{\\text{num}}$": numG,
+        "梯度分量和 $\\sum_i g_i$": Math.abs(gradSum) < 1e-12 ? 0 : gradSum,
+        "解析 vs 差分最大误差": maxErr,
+      }, 4);
+    },
+  });
+
+  // 3. Sigmoid + BCE vs Sigmoid + MSE 梯度对比曲线 (y = 1, z ∈ [-6, 4])
+  const gradBceFn = (z) => LabMath.sigmoid(z) - 1.0;
+  const gradMseFn = (z) => {
+    const s = LabMath.sigmoid(z);
+    return (s - 1.0) * s * (1.0 - s);
+  };
+
+  LabPlot.chart("#fig-mse-bce", {
+    x: [-6, 4],
+    y: [-1.12, 0.15],
+    xLabel: "线性输出 z（真实标签固定为 y = 1）",
+    yLabel: "对 z 的梯度 ∂L/∂z",
+    height: 290,
+  })
+    .fn(gradBceFn, { label: "Sigmoid + 交叉熵: σ(z) − 1", color: 1 })
+    .fn(gradMseFn, { label: "Sigmoid + MSE: (σ−1)σ(1−σ)", color: 2, dash: true })
+    .vline(-5.0, { color: 4, label: "严重误判 z = -5" })
+    .point(-5.0, bceGradBad, { color: 1, label: "BCE: -0.9933" })
+    .point(-5.0, mseGradBad, { color: 2, label: "MSE: -0.0066" })
+    .draw();
+});
+</script>
+</body>
+</html>

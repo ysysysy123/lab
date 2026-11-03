@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>矩阵反向传播与 Softmax+交叉熵速查卡 · 速查</title>
+<meta name="lab:kind" content="reference">
+<meta name="lab:date" content="2026-11-02">
+<link rel="stylesheet" href="../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body class="ref">
+<div class="lab-layout">
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../index.html">📚 学习地图</a> / 速查表</div>
+      <h1>矩阵反向传播与 Softmax+交叉熵速查卡</h1>
+      <p class="subtitle">手撕两层 MLP、推导 $p - y$ 灵魂梯度与 Log-Sum-Exp 数值稳定性的 1 页浓缩资产</p>
+      <div class="chips">
+        <span class="chip">📅 更新于 2026-11-02</span>
+        <span class="chip">🔗 来源：<a href="../w01-自动微分与P1/lessons/0002-softmax-cross-entropy-grad.html">w01 第 2–4 课</a></span>
+        <span class="chip">💻 projects/p1-tiny-llm/src/w01_mlp_mnist.py</span>
+      </div>
+    </header>
+
+    <div class="ref-grid">
+      <section>
+        <h3>1. Softmax + 交叉熵与 Log-Sum-Exp</h3>
+        <p><strong>平移不变防上溢</strong>（令 $m = \max_j z_j$，指数最大输入恒为 $0$）：</p>
+        <p>$$p_i = \frac{e^{z_i - m}}{\sum_{j=1}^K e^{z_j - m}}, \qquad L = -\log p_y = m - z_y + \log \sum_{j=1}^K e^{z_j - m}$$</p>
+        <p><strong>灵魂梯度</strong>（对数与指数互逆抵消，无 Sigmoid+MSE 饱和因子）：</p>
+        <p>$$\frac{\partial L}{\partial z_i} = p_i - \mathbb{1}[i = y], \qquad \mathrm{d}Z_2 = \frac{1}{B}(P - Y)$$</p>
+      </section>
+
+      <section>
+        <h3>2. 批量矩阵 BP 维度拼图双铁律</h3>
+        <ul>
+          <li><strong>同形铁律</strong>：梯度张量 $\mathrm{d}T$ 必须与原张量 $T$ 形状完全一致。</li>
+          <li><strong>消维铁律</strong>：$Z = A W + b$（$A \in \mathbb{R}^{B\times H},\ W \in \mathbb{R}^{H\times K},\ \mathrm{d}Z \in \mathbb{R}^{B\times K}$）：
+            <ul>
+              <li>求 $\mathrm{d}W \in (H, K)$ 消掉 $B$：$\mathrm{d}W = A^\top \mathrm{d}Z$</li>
+              <li>求 $\mathrm{d}A \in (B, H)$ 消掉 $K$：$\mathrm{d}A = \mathrm{d}Z \, W^\top$</li>
+              <li>求 $\mathrm{d}b \in (1, K)$ 回收广播：$\mathrm{d}b = \sum_{b=1}^B \mathrm{d}Z[b, :]$</li>
+            </ul>
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h3>3. NumPy 两层 MLP 反向 7 行核心模板</h3>
+<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="102"><code class="language-python">dZ2 = (P - Y) / B                        # (B, 10)
+dW2 = A1.T @ dZ2                         # (128, 10)
+db2 = np.sum(dZ2, axis=0, keepdims=True) # (1, 10)
+
+dA1 = dZ2 @ self.W2.T                    # (B, 128)
+dZ1 = dA1 * (Z1 &gt; 0)                     # (B, 128) ReLU 掩码
+dW1 = X.T @ dZ1                          # (784, 128)
+db1 = np.sum(dZ1, axis=0, keepdims=True) # (1, 128)</code></pre>
+      </section>
+
+      <section>
+        <h3>4. 高频防坑清单</h3>
+        <ul>
+          <li><strong><code>nn.CrossEntropyLoss</code> 前严禁加 <code>Softmax</code></strong>：内部已融合 <code>F.log_softmax</code> + <code>NLLLoss</code>。</li>
+          <li><strong>权重严禁全 0 初始化</strong>：会导致同层所有隐藏元前向激活与反向梯度恒等（对称性死锁）；ReLU 层配 Kaiming 初始化 $\mathcal{N}(0, 2/d_{\text{in}})$。</li>
+          <li><strong>三端精度防溢出</strong>：RTX 4080 开 <code>bf16</code>（动态范围同 FP32）；Colab T4 仅支持 <code>fp16</code>（$\exp(11.1)$ 即溢出，必做减 $\max$）。</li>
+        </ul>
+      </section>
+    </div>
+
+    <footer class="lab-footer">lab-teach 速查表 · 打印友好（浏览器按 Ctrl+P 可直接导出单页 PDF）</footer>
+  </main>
+</div>
+<script src="../../.agents/skills/lab-teach/assets/lab.js"></script>
+</body>
+</html>
+

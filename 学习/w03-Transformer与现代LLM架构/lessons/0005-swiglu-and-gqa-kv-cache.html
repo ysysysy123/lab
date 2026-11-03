@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>现代 LLM 标准积木：SwiGLU 门控前馈网络与 GQA 分组查询省显存账本 · w03-Transformer与现代LLM架构</title>
+<meta name="lab:topic" content="w03-Transformer与现代LLM架构">
+<meta name="lab:num" content="5">
+<meta name="lab:step" content="5">
+<meta name="lab:date" content="2026-11-01">
+<link rel="stylesheet" href="../../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body>
+<div class="lab-layout">
+  <nav id="lab-toc" aria-label="目录"></nav>
+
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../../index.html">📚 学习地图</a> / <a href="../../index.html#w03-Transformer与现代LLM架构">w03-Transformer与现代LLM架构</a> / 第 5 课</div>
+      <h1>现代 LLM 标准积木：SwiGLU 门控前馈网络与 GQA 分组查询省显存账本</h1>
+      <p class="subtitle">为什么 Llama-2-7B 隐藏层偏偏取 11008 维？一张 12GB 的 RTX 4080 到底能塞下多长的上下文？</p>
+      <div class="chips">
+        <span class="chip">⏱ 约 22 分钟</span>
+        <span class="chip">🧭 计划步骤 5 / 5（专题收官）</span>
+        <span class="chip">📅 2026-11-01</span>
+        <span class="chip">📓 04-前馈网络 · 08-MQA与GQA · 09-MiniMind整体架构</span>
+      </div>
+    </header>
+
+    <div class="win">
+      <div class="icon">🎯</div>
+      <div>
+        <h4>本课收获</h4>
+        <p>手算 $2\times 3$ SwiGLU 门控前向值并推导 <strong>$\frac{8}{3}d \to 11008$ 等参数量口算题</strong>；掌握 GQA 头分组广播机制，并用字节级公式 10 秒算出任意 7B/8B 大模型在长文本下的 <strong>KV Cache 显存账本</strong>。</p>
+      </div>
+    </div>
+
+    <div class="prereq">
+      <b>前置依赖：</b>
+      <span class="known">✓ 多头自注意力 MHA 与因果掩码（本专题第 2 课）</span> ·
+      <span class="known">✓ RoPE 旋转位置编码与 Pre-Norm + RMSNorm 骨架（第 3–4 课）</span> ·
+      <span class="gap">△ 自回归推理 Prefill 与 Decode 两阶段分工（本课 §3 用 3 句话补齐）</span>
+    </div>
+
+    <!-- ========== §1 痛点与直觉 ========== -->
+    <section>
+      <h2><span class="num">01</span>痛点与直觉：现代开源 LLM 对 2017 原版架构的最后两刀改造</h2>
+      <p>前两节课我们已经把 2017 原版 Transformer 的位置编码换成了 <strong>RoPE</strong>，把残差归一化换成了 <strong>Pre-Norm + RMSNorm</strong>。要拼齐今天 LLaMA、Qwen、DeepSeek、MiniMind 的现代标准底座，还剩最后两块最吃参数与显存的核心积木：</p>
+      <ul>
+        <li><strong>第一刀砍向 FFN（占整模约 $2/3$ 参数量的「静态知识记忆库」）</strong>：原版单路 $\text{ReLU}(xW_1)W_2$ 遇到负数一刀切零（Dead ReLU 神经元永久坏死），且只是简单的线性投射加截断；现代 LLM 全员换装带软门控的 <strong>SwiGLU</strong>，用双路逐元素相乘动态控制每个特征通道的开合度，同参数预算下困惑度（PPL）显著下降。</li>
+        <li><strong>第二刀砍向推理头号瓶颈 Attention KV Cache</strong>：自回归生成时，每吐出 1 个新词都要读取所有历史 Token 的 $K, V$ 向量。当上下文拉到 $32\text{K}$ 时，原版 MHA 的 KV Cache 高达 <strong>$16\text{ GiB}$</strong>——比 7B 模型权重本身（$14\text{ GiB}$）还肥，直接把你的 RTX 4080（12GB）撑到 OOM！现代模型改用 <strong>GQA（Grouped-Query Attention）</strong> 让一组 Query 头共享同一份 KV 头，<strong>KV 显存立砍 4–8 倍而精度几乎零损失！</strong></li>
+      </ul>
+
+      <div class="callout intuition">
+        <span class="ct">一句话抓住两项改造的灵魂</span>
+        <p><strong>SwiGLU 给前馈网络装上了「可学习的无级调光旋钮」</strong>（一路产内容、一路拧阀门）；<br>
+        <strong>GQA 把「每人独享一套参考书（MHA）」改成了「4–7 人学习小组共用一套参考书（KV Cache）」</strong>，书架空间立省 80%，做题准确率却几乎一样高！</p>
+      </div>
+    </section>
+
+    <!-- ========== §2 SwiGLU 与 8/3d 参数对齐推导 ========== -->
+    <section>
+      <h2><span class="num">02</span>SwiGLU 门控前馈网络与 $\frac{8}{3}d$ 参数对齐推导</h2>
+
+      <h3>从单路 ReLU 到双路门控 SwiGLU</h3>
+      <p>SwiGLU（Shazeer, 2020）由 <strong>Swish / SiLU 激活函数</strong>与 <strong>GLU（门控线性单元）</strong>结合而成。先看激活函数 $\text{SiLU}(z) = z \cdot \sigma(z) = \frac{z}{1 + e^{-z}}$：它在正半轴近似恒等，在负半轴（约 $z \approx -1.28$ 处有极小负谷底 $-0.278$）平滑趋于 $0$，<strong>处处可导且无死区</strong>。</p>
+
+      <div class="eq-explain">
+        <span class="eq-tag">SwiGLU</span>
+        <p>$$\text{SwiGLU}(x) = \Big(\underbrace{\text{SiLU}(x W_{\text{gate}})}_{\text{软门控阀门}} \;\odot\; \underbrace{(x W_{\text{up}})}_{\text{候选内容}}\Big) W_{\text{down}}$$</p>
+        <dl>
+          <dt>$W_{\text{gate}}, W_{\text{up}} \in \mathbb{R}^{d \times d_{ff}}$</dt><dd>两个并行的升维无偏置线性层，分别把每个 Token 从隐藏维 $d$ 投射到中间维 $d_{ff}$</dd>
+          <dt>$\odot$（Hadamard 积）</dt><dd>逐通道相乘：相当于在特征空间引入<strong>二阶双线性交互</strong>，门控值决定放行、反转还是抑制对应通道内容</dd>
+          <dt>$W_{\text{down}} \in \mathbb{R}^{d_{ff} \times d}$</dt><dd>降维投影层，把门控筛选后的高维特征压回主干维度 $d$ 汇入残差流</dd>
+        </dl>
+      </div>
+
+      <h3>极小具体数字手算：$d=2,\ d_{ff}=3$ 看门控如何拧水龙头</h3>
+      <p>取单 Token 输入 $x = [1.0,\ 2.0]$，设三块无偏置权重矩阵（经 <code>verify_0005.py</code> 与 PyTorch <code>F.silu</code> 严格核对）：</p>
+      <p>$$W_{\text{gate}} = \begin{bmatrix} 1.0 & -1.0 & 0.0 \\ 0.5 & 0.0 & -2.0 \end{bmatrix}, \quad W_{\text{up}} = \begin{bmatrix} 0.5 & 1.0 & 1.0 \\ 0.5 & 1.5 & 1.0 \end{bmatrix}, \quad W_{\text{down}} = \begin{bmatrix} 1.0 & 0.0 \\ 0.5 & -1.0 \\ 0.0 & 2.0 \end{bmatrix}$$</p>
+      <ol>
+        <li><strong>算门控支路并过 SiLU</strong>：$g = x W_{\text{gate}} = [2.0,\ -1.0,\ -4.0]$，逐元素算 $z \cdot \sigma(z)$：
+          $$\text{SiLU}(g) = \big[2\sigma(2),\ -1\sigma(-1),\ -4\sigma(-4)\big] \approx \mathbf{[1.761594,\ -0.268941,\ -0.071945]}$$</li>
+        <li><strong>算内容支路</strong>：$u = x W_{\text{up}} = \mathbf{[1.5,\ 4.0,\ 3.0]}$。</li>
+        <li><strong>逐元素相乘（3 个通道呈现 3 种鲜明状态！）</strong>：
+          $$h = \text{SiLU}(g) \odot u \approx \big[\underbrace{2.642391}_{\text{通道 0：正向放大放行}},\; \underbrace{-1.075766}_{\text{通道 1：平滑负向调制}},\; \underbrace{-0.215835}_{\text{通道 2：阀门关小强力抑制}}\big]$$</li>
+        <li><strong>降维投回主干</strong>：$y = h W_{\text{down}} \approx \mathbf{[2.104508,\ 0.644097]}$。</li>
+      </ol>
+
+      <div class="callout interview">
+        <span class="ct">面试必考口算推导：为什么 Llama-2-7B 的 <code>intermediate_size</code> 偏偏是 <code>11008</code>，而不是传统的 $4d = 16384$？</span>
+        <p><strong>第一步（等参数量 / 等 FLOPs 对齐）</strong>：</p>
+        <ul>
+          <li>传统 2 矩阵 FFN（$W_1 \in \mathbb{R}^{d\times 4d},\ W_2 \in \mathbb{R}^{4d\times d}$）总参数量为：$2 \times d \times 4d = \mathbf{8d^2}$；</li>
+          <li>SwiGLU 有 <strong>3 个矩阵</strong>（$W_{\text{gate}}, W_{\text{up}}, W_{\text{down}}$），总参数量为：$\mathbf{3 d d_{ff}}$；</li>
+          <li>为保持总参数量与计算量不变，令 $3 d d_{ff} = 8 d^2 \implies \mathbf{d_{ff} = \frac{8}{3}d \approx 2.667\,d}$！</li>
+        </ul>
+        <p><strong>第二步（GPU Tensor Core 硬件块对齐）</strong>：在 Llama-2-7B 中隐藏维 $d = 4096$，理论值 $\frac{8}{3} \times 4096 = 10922.67$ 除不尽。为了喂饱 GPU Tensor Core 矩阵乘分块（<code>multiple_of = 256</code>），向上取整到 $256$ 的最小整数倍：</p>
+        <p>$$d_{ff} = \left\lceil \frac{10922.67}{256} \right\rceil \times 256 = 43 \times 256 = \mathbf{11008}$$</p>
+        <p class="small muted">核对账本：此时单层 SwiGLU 参数量 $3 \times 4096 \times 11008 \approx 135.27\text{M}$，与传统 $8d^2 \approx 134.22\text{M}$ 相差不到 $0.78\%$！</p>
+      </div>
+    </section>
+
+    <!-- ========== §3 GQA 与 KV Cache 字节级显存账本 ========== -->
+    <section>
+      <h2><span class="num">03</span>GQA 分组查询注意力与 KV Cache 字节级显存账本</h2>
+
+      <h3>为什么推理必须开 KV Cache？（Prefill vs Decode）</h3>
+      <p>大模型自回归生成一句话分为两个截然不同的阶段：</p>
+      <ul>
+        <li><strong>Prefill（预填充）</strong>：一次性并行读入用户的整段 Prompt（长度 $T_0$），算出所有历史位置的 $K_{1:T_0}, V_{1:T_0}$ <strong>存进显存（KV Cache）</strong>，并吐出第 1 个新词（计算密集 Compute-Bound）。</li>
+        <li><strong>Decode（逐词解码）</strong>：生成第 $t$ 个词时，由于因果掩码限制，前 $t-1$ 个词的 $K, V$ 早已固定不变！模型<strong>每次只喂入最新 1 个词 <code>(B, 1, d)</code></strong>，算出 $q_t, k_t, v_t$，把 $k_t, v_t$ 拼到缓存末尾，拿 $q_t$ 与整条历史缓存做点积——单步计算复杂度从重算全句的 $O(t^2)$ 骤降到 $O(t)$，但<strong>每吐 1 个词都必须把庞大的 KV Cache 从 HBM 搬进核心一遍（典型的显存带宽受限 Memory-Bound）！</strong></li>
+      </ul>
+
+      <h3>MHA → MQA → GQA：点击切换三种头分组映射拓扑</h3>
+      <p>下面以 8 个 Query 头直观演示三种注意力变体的头共享方式（工业 7B 模型通常 $H_q=32, d_k=128$）：</p>
+
+      <div class="lab-figure">
+        <div id="graph-gqa"></div>
+        <figcaption>上方为 Query 头（固定 $H_q$ 个以保留多视角查询能力），下方为实际需要驻留显存的 KV 头（$H_{kv}$ 个）。</figcaption>
+      </div>
+
+      <div class="lab-stepper" id="step-gqa" data-title="三种注意力头映射对比（MHA vs MQA vs GQA）">
+        <div class="step" data-title="MHA（多头注意力 · Llama-2-7B）：一对一独享，KV 显存最肥">
+          <p>$H_{kv} = H_q = 32$（每组 $g = 1$）：每个 Query 头各自配一套专属的 Key / Value 头。表达能力上限最高，但 Decode 阶段每生成一个词都要搬运全部 32 组历史 KV，长上下文下显存与带宽双双告急。</p>
+        </div>
+        <div class="step" data-title="MQA（多查询注意力 · PaLM / Falcon）：全场挤用 1 组 KV，极致省但略掉点">
+          <p>$H_{kv} = 1$（组大小 $g = H_q = 32$）：所有 32 个 Query 头全部指向唯独 1 组公共的 Key / Value 头！KV Cache 瞬间缩小 <strong>32 倍</strong>，但过度压缩键值空间会导致复杂推理与长文检索质量下滑。</p>
+        </div>
+        <div class="step" data-title="GQA（分组查询注意力 · Llama-3 / Qwen2.5 / MiniMind）：精度与显存的黄金甜点">
+          <p>$1 &lt; H_{kv} &lt; H_q$：把 $H_q$ 个 Query 头均分成 $H_{kv}$ 组，每组 $g = H_q / H_{kv}$ 个 Q 头共享 1 份 KV 头！<br>
+          • <strong>Llama-3-8B</strong>：$H_q = 32,\ H_{kv} = 8 \implies g = 4$（KV 显存直砍 <strong>$4\times$</strong>）；<br>
+          • <strong>Qwen2.5-7B</strong>：$H_q = 28,\ H_{kv} = 4 \implies g = 7$（KV 显存直砍 <strong>$7\times$</strong>）；<br>
+          • <strong>MiniMind</strong>：$H_q = 8,\ H_{kv} = 4 \implies g = 2$（KV 显存直砍 <strong>$2\times$</strong>）。</p>
+        </div>
+      </div>
+
+      <table class="shape">
+        <tr><th>Decode 单步阶段张量</th><th>Shape（以 $T_{\text{cur}}=1$ 为例）</th><th>物理含义与防坑要点</th></tr>
+        <tr><td><code>x_cur</code></td><td>(B, 1, d)</td><td>当前步刚喂入的 1 个最新 Token 隐藏状态</td></tr>
+        <tr><td><code>q</code></td><td>(B, H_q, 1, d_k)</td><td>完整拆出 $H_q$ 个查询头，随后施加当前位置 <code>pos</code> 的 RoPE 旋转</td></tr>
+        <tr><td><code>k_new, v_new</code></td><td>(B, H_kv, 1, d_k)</td><td><strong>仅投影出 $H_{kv}$ 个头！</strong>对 <code>k_new</code> 施加 RoPE（<code>v_new</code> 不转）</td></tr>
+        <tr><td><code>k_cache, v_cache</code></td><td>(B, H_kv, T_all, d_k)</td><td>沿序列维 <code>axis=2</code> 拼接历史缓存（<strong>注意：缓存存的是精简的 $H_{kv}$ 头！</strong>）</td></tr>
+        <tr><td><code>k_r, v_r</code>（逻辑对齐）</td><td>(B, H_q, T_all, d_k)</td><td>每组重复 $g = H_q / H_{kv}$ 份与 <code>q</code> 对齐，算出 <code>scores: (B, H_q, 1, T_all)</code></td></tr>
+      </table>
+
+      <h3>面试必背：KV Cache 字节级显存口算公式</h3>
+      <div class="eq-explain">
+        <span class="eq-tag">KV 显存账本</span>
+        <p>$$\text{KV Cache Bytes} = \underbrace{2}_{K\text{ 与 }V} \times L_{\text{layers}} \times H_{kv} \times d_k \times B \times T \times \text{bytes\_per\_elem}$$</p>
+        <dl>
+          <dt>系数 $2$</dt><dd>每层既要存 Key 缓存也要存 Value 缓存，缺一不可</dd>
+          <dt>$L_{\text{layers}} \times H_{kv} \times d_k$</dt><dd>模型层数 × <strong>KV 头数（注意是 $H_{kv}$ 不是 $H_q$！）</strong> × 单头维度</dd>
+          <dt>$B \times T \times \text{bytes}$</dt><dd>并发 Batch 大小 × 上下文总长度 × 每个元素字节数（FP16/BF16 取 $2\text{B}$，FP8/INT8 取 $1\text{B}$，INT4 取 $0.5\text{B}$）</dd>
+        </dl>
+      </div>
+
+      <aside class="sidenote">
+        <b>单位换算口诀</b>：$1\text{ KiB} = 1024\text{ B} = 2^{10}\text{ B}$，$1\text{ MiB} = 2^{20}\text{ B} = 1{,}048{,}576\text{ B}$，$1\text{ GiB} = 2^{30}\text{ B}$。口算时把 $32 = 2^5,\ 128 = 2^7,\ 32768 = 2^{15}$ 全换成 $2$ 的幂次加减指数，3 秒出结果！
+      </aside>
+
+      <p>直接拿单样本 $B=1$、长文本 $T = 32768\ (2^{15})$、半精度 BF16（$2\text{ Bytes}$）算三笔硬账：</p>
+      <ul>
+        <li><strong>Llama-2-7B（MHA：$L=32, H_{kv}=32, d_k=128$）</strong>：单词占 $2 \times 32 \times 32 \times 128 \times 2 = 2^{19}\text{ B} = \mathbf{0.5\text{ MiB/token}}$；$32\text{K}$ 上下文共吃掉 $32768 \times 0.5\text{ MiB} = \mathbf{16.0\text{ GiB}}$（加上 $13.5\text{ GiB}$ 权重总计近 $30\text{ GiB}$，你的 <strong>RTX 4080 12GB</strong> 连零头都装不下！）；</li>
+        <li><strong>Llama-3-8B（GQA：$L=32, H_{kv}=8, d_k=128$）</strong>：$H_{kv}$ 砍至 $1/4$，单词降至 $\mathbf{0.125\text{ MiB/token}}$，$32\text{K}$ 缓存立减 4 倍至 <strong>$\mathbf{4.0\text{ GiB}}$</strong>；</li>
+        <li><strong>Qwen2.5-7B（GQA：$L=28, H_q=28, H_{kv}=4, d_k=128$）</strong>：单词仅 $2 \times 28 \times 4 \times 128 \times 2 = 57{,}344\text{ B} = \mathbf{56.0\text{ KiB/token}}$，$32\text{K}$ 缓存仅占 <strong>$\mathbf{1.75\text{ GiB}}$</strong>！若配 INT4 权重量化（约 $3.8\text{ GiB}$），整套模型 + 32K 长文在你的 <strong>12GB 笔记本显卡</strong>上轻松起飞！</li>
+      </ul>
+    </section>
+
+    <!-- ========== §4 代码讲解与架构演进总表 ========== -->
+    <section>
+      <h2><span class="num">04</span>代码讲解：MiniMind <code>SwiGLU</code> 与 <code>GQAAttention</code> 源码 + 五大演进总表</h2>
+
+      <h3>模块一：<code>SwiGLU</code> 三线性层无偏置实现</h3>
+      <div class="code-walk" data-dim>
+<pre data-file="../04-LLM大模型/教学/09-MiniMind整体架构.ipynb · Cell#17" data-start="1"><code class="language-python">class SwiGLU:
+    def __init__(self, cfg, seed=2):
+        d, itm = cfg['hidden_size'], cfg['intermediate_size']
+        rng = np.random.default_rng(seed)
+        self.Wg = rng.standard_normal((d, itm)) * 0.03     # gate 门控投影
+        self.Wu = rng.standard_normal((d, itm)) * 0.03     # up 内容投影
+        self.Wd = rng.standard_normal((itm, d)) * 0.03     # down 降维投影
+    def __call__(self, x):
+        silu = lambda z: z / (1 + np.exp(-z))              # SiLU(x) = x·σ(x)
+        return (silu(x @ self.Wg) * (x @ self.Wu)) @ self.Wd
+
+ffn = SwiGLU(cfg)
+print('SwiGLU FFN:', emb_in.shape, '-&gt;', ffn(emb_in).shape)</code></pre>
+        <ol class="walk">
+          <li data-lines="5-7"><strong>三矩阵无偏置布局</strong>：<code>Wg</code> 与 <code>Wu</code> 同为 <code>(d, itm)</code>，工业推理框架（如 vLLM）常把这两块矩阵在列维拼成一个 <code>gate_up_proj: (d, 2*itm)</code> 做单次大矩阵乘，算力利用率更高！</li>
+          <li data-lines="9-10"><strong>一行前向核心</strong>：<code>silu(x @ self.Wg) * (x @ self.Wu)</code> 在高维中间态逐通道门控过滤，再右乘 <code>self.Wd</code> 回到 <code>(B, T, d)</code>。</li>
+        </ol>
+      </div>
+
+      <h3>模块二：<code>GQAAttention</code>、<code>repeat_kv</code> 与增量 KV Cache 闭环</h3>
+      <div class="code-walk" data-dim>
+<pre data-file="../04-LLM大模型/教学/09-MiniMind整体架构.ipynb · Cell#13" data-start="1"><code class="language-python">def repeat_kv(x, n_rep):
+    """每个 KV 头复制 n_rep 份：[B, kv_h, T, dk] -&gt; [B, kv_h*n_rep, T, dk]。"""
+    return np.repeat(x, n_rep, axis=1)
+
+class GQAAttention:
+    def __init__(self, cfg, seed=1):
+        d, h, kv_h, hd = cfg['hidden_size'], cfg['num_attention_heads'], cfg['num_key_value_heads'], cfg['head_dim']
+        rng = np.random.default_rng(seed)
+        def w(shape): return rng.standard_normal(shape) * 0.03
+        self.Wq = w((d, h * hd)); self.Wk = w((d, kv_h * hd)); self.Wv = w((d, kv_h * hd))
+        self.Wo = w((h * hd, d))
+        self.h, self.kv_h, self.hd, self.n_rep = h, kv_h, hd, h // kv_h
+    def forward(self, x, freqs_cis, mask=None, cache=None, positions=0):
+        """x [B, T_cur, d]；cache=(k,v)；positions: 当前 x 的起始位置（预填充=0）。返回 out, (k, v)。"""
+        B, T_cur, d = x.shape
+        q = x @ self.Wq                       # [B, T_cur, h*hd]
+        k = x @ self.Wk                       # [B, T_cur, kv_h*hd]
+        v = x @ self.Wv
+        def split(t, n_h):
+            return t.reshape(B, T_cur, n_h, self.hd).transpose(0, 2, 1, 3)  # [B,n_h,T_cur,hd]
+        q, k, v = split(q, self.h), split(k, self.kv_h), split(v, self.kv_h)
+        # 只旋转"本步新增"位置的 Q/K（RoPE 后 K 进缓存）
+        pos = np.arange(positions, positions + T_cur)
+        q = apply_rotary(q, freqs_cis[pos]); k = apply_rotary(k, freqs_cis[pos])
+        if cache is not None:                 # 增量：拼接历史 KV
+            k = np.concatenate([cache[0], k], axis=2)
+            v = np.concatenate([cache[1], v], axis=2)
+        k_r, v_r = repeat_kv(k, self.n_rep), repeat_kv(v, self.n_rep)   # [B, h, T_all, hd]
+        scores = np.matmul(q, k_r.swapaxes(-1, -2)) / math.sqrt(self.hd)  # [B,h,T_cur,T_all]
+        if mask is not None: scores = np.where(mask, -np.inf, scores)
+        attn = np.exp(scores - np.max(scores, -1, keepdims=True))
+        attn = attn / attn.sum(-1, keepdims=True)                        # [B,h,T_cur,T_all]
+        o = np.matmul(attn, v_r)                                         # [B,h,T_cur,hd]
+        o = o.transpose(0, 2, 1, 3).reshape(B, T_cur, self.h * self.hd)
+        return o @ self.Wo, (k, v)
+
+# ---- 预填充 + 张量形状打印 ----
+attn = GQAAttention(cfg)
+emb_in = np.random.randn(B, T, cfg['hidden_size'])
+o_prefill, (k_cache, v_cache) = attn.forward(emb_in, freqs_cis, positions=0)
+print('prefill out:', o_prefill.shape, '| K 缓存:', k_cache.shape, '(B, 2 KV 头, 6 位置, dk=2)')
+# ---- 增量解码前向（只算第 6 个新 token） ----
+x_new = np.random.randn(B, 1, cfg['hidden_size'])
+o_dec, (k_new, v_new) = attn.forward(x_new, freqs_cis, positions=6, cache=(k_cache, v_cache))
+print('decode  out:', o_dec.shape, '| K 变长到', k_new.shape[2], '个位置（拼接成功）')</code></pre>
+        <ol class="walk">
+          <li data-lines="1-3,10-12"><strong>非对称投影矩阵</strong>：<code>Wq</code> 输出维是 <code>h * hd</code>，而 <code>Wk, Wv</code> 输出维只有精简的 <code>kv_h * hd</code>，连线性投影参数量都顺手省掉了！<code>repeat_kv</code> 必须用<strong>相邻重复</strong>（PyTorch 中为 <code>repeat_interleave</code> 或 <code>unsqueeze(2).expand(...).reshape(...)</code>），让第 0 组的 <code>n_rep</code> 个 Q 头都对准第 0 个 KV 头。</li>
+          <li data-lines="22-27"><strong>顺序铁律：先 RoPE 旋转新词、再拼入 KV Cache！</strong>因为缓存里的旧 Key 已经带好了各自历史时刻的旋转角，本步只需按绝对起始偏移 <code>positions</code> 旋转当前新增的 <code>q, k</code>，再沿序列轴 <code>axis=2</code> 拼接。</li>
+          <li data-lines="28-35"><strong>防坑死穴（第 35 行）</strong>：返回值 <code>return o @ self.Wo, (k, v)</code> 存进缓存的<strong>必须是 <code>repeat_kv</code> 之前的精简 <code>(k, v)</code></strong>！如果手滑返回了放大后的 <code>(k_r, v_r)</code>，GQA 省显存的收益直接归零！</li>
+          <li data-lines="38-45"><strong>Prefill → Decode 闭环验证</strong>：第 40 行一次性喂入 6 个词建立初始缓存；第 44 行只喂 1 个新词 <code>(B, 1, d)</code> 并传 <code>positions=6</code>，缓存自动增长到 7 个位置且无任何冗余重算。</li>
+        </ol>
+      </div>
+
+      <h3>专题收官总表：2017 原版 Transformer vs 现代开源 LLM 五大架构演进</h3>
+      <table class="shape">
+        <tr><th>核心维度</th><th>2017 原版 Transformer</th><th>现代 LLaMA / Qwen / MiniMind</th><th>演进核心收益</th></tr>
+        <tr><td>1. 宏观拓扑</td><td>Encoder-Decoder（双向编码 + 交叉注意力）</td><td><strong>Decoder-only</strong>（纯因果自回归）</td><td>统一预训练与生成范式，Scaling Law 效率最高</td></tr>
+        <tr><td>2. 位置编码</td><td>绝对正弦 Sinusoidal（仅在入口加一次）</td><td><strong>RoPE 旋转位置编码</strong>（每层乘在 $Q, K$ 上）</td><td>内积天然只依赖相对距离 $m-n$，支持长文本外推</td></tr>
+        <tr><td>3. 归一化与残差</td><td>Post-LN + LayerNorm（主干含归一化）</td><td><strong>Pre-Norm + RMSNorm</strong>（+ 顶层 Final Norm）</td><td>主干恒等直通免漫长 Warmup，砍掉均值省 10%–30% 带宽耗时</td></tr>
+        <tr><td>4. 前馈网络 FFN</td><td>$\text{ReLU}(xW_1+b_1)W_2+b_2$（$d_{ff}=4d$）</td><td><strong>无偏置 SwiGLU</strong>（$d_{ff} \approx \frac{8}{3}d$ 对齐 256）</td><td>消灭 Dead ReLU，双路门控交互显著降低 PPL</td></tr>
+        <tr><td>5. 注意力与缓存</td><td>MHA（$H_{kv}=H_q$）+ 线性层带 <code>bias</code></td><td><strong>GQA（$H_{kv} \ll H_q$）+ KV Cache</strong> + <code>bias=False</code></td><td>KV Cache 显存与 Decode 带宽立省 4–8 倍，精度近乎无损</td></tr>
+      </table>
+    </section>
+
+    <!-- ========== §5 交互实验 ========== -->
+    <section>
+      <h2 id="sec-pg"><span class="num">05</span>交互实验：7B/8B 大模型显存账本计算器 &amp; 门控激活对比</h2>
+      <p>在实际跑实验或面试被问「你的机器能不能跑 XX 模型」时，用下面这个账本实验台一键切换主流 7B/8B 架构、上下文长度与量化精度，直接对比你的<strong>本机 RTX 4080 Laptop（12 GiB）</strong>与<strong>远程 A800（80 GiB）</strong>硬件红线：</p>
+
+      <div id="pg-kv"></div>
+
+      <p class="small muted">💡 <strong>必试观察</strong>：① 在默认 BF16 + $T=32768$ 下对比三款预设模型：Llama-2-7B 光 KV Cache 就吃掉 <code>16.0 GiB</code>，总显存 <code>28.55 GiB</code>；切到 Qwen2.5-7B，KV Cache 暴跌近 10 倍至 <code>1.75 GiB</code>！② 在 Qwen2.5-7B 下把「权重精度」切为 <code>INT4 (0.5B)</code>，总显存立刻降到 <strong><code>5.30 GiB</code></strong>——稳稳压在本机 RTX 4080 <code>12 GiB</code> 红线以下！</p>
+
+      <div id="pg-act"></div>
+    </section>
+
+    <!-- ========== §6 小结 ========== -->
+    <section>
+      <h2><span class="num">06</span>小结</h2>
+      <div class="callout summary">
+        <span class="ct">本课与 w03 专题收官四句话</span>
+        <ul>
+          <li><strong>SwiGLU 门控升维</strong>：$\big(\text{SiLU}(xW_{\text{gate}}) \odot (xW_{\text{up}})\big)W_{\text{down}}$ 用 3 个矩阵实现软门控筛选；为对齐 $8d^2$ 参数预算取 $d_{ff} = \frac{8}{3}d$ 并向 256 取整（$4096 \to 11008$）。</li>
+          <li><strong>KV Cache 空间换时间</strong>：把 Decode 单步复杂度从 $O(t^2)$ 降为 $O(t)$，但使自回归生成彻底变成受限于 HBM 显存带宽的 Memory-Bound 任务。</li>
+          <li><strong>GQA 省显存黄金公式</strong>：$\text{Bytes} = 2 \cdot L \cdot H_{kv} \cdot d_k \cdot B \cdot T \cdot \text{bytes}$；用 $H_{kv} = H_q / g$ 分组共享，把 KV 显存与带宽开销直接砍掉 $g$ 倍。</li>
+          <li><strong>现代 Decoder-only 五件套已齐</strong>：<strong>RoPE + Pre-RMSNorm + GQA(KV Cache) + SwiGLU + 无偏置 Linear</strong>——至此你已经吃透了从零手写一整座现代大模型的全部底层积木！</li>
+        </ul>
+      </div>
+
+      <div class="callout interview">
+        <span class="ct">30 秒面试表达模板</span>
+        <p>「现代 LLM 在 FFN 和 Attention 上有两个非常关键的工程权衡：FFN 用 <strong>SwiGLU</strong> 替代 ReLU，靠 $\text{SiLU}$ 门控与内容支路逐元素相乘增强非线性表达，由于矩阵从 2 个变成 3 个，中间维从 $4d$ 缩到 $\frac{8}{3}d$ 再对齐 256 倍数（比如 7B 的 11008）以维持 $8d^2$ 等参数量。Attention 则用 <strong>GQA</strong> 解决长文本推理的 KV Cache 瓶颈：按公式 $2 \times L \times H_{kv} \times d_k \times B \times T \times 2\text{B}$，Llama-2-7B 用 MHA 在 32K 长度下单样本 KV 就要 16 GiB，而换成 $H_{kv}=8$ 或 $4$ 的 GQA 后直接降到 4 GiB 甚至 1.75 GiB，同时大幅缓解了 Decode 阶段的显存带宽瓶颈。」</p>
+      </div>
+    </section>
+
+    <!-- ========== §7 可选自测与面试三层追问 ========== -->
+    <section>
+      <h2><span class="num">07</span>想检验一下？（可选 · 点击展开）</h2>
+
+      <details class="reveal q">
+        <summary>1. 10 秒现场口算：某 14B 大模型有 $L=40$ 层，$H_q=40,\ H_{kv}=8,\ d_k=128$，用 BF16（2 Bytes）跑并发 $B=4$、上下文 $T=8192$，光 KV Cache 占多少 GiB？</summary>
+        <div>
+          <p>直接套公式（千万别误代 $H_q=40$，要代 $H_{kv}=8$！）：</p>
+          <p>$$\text{Bytes} = 2 \times 40 \times 8 \times 128 \times 4 \times 8192 \times 2$$</p>
+          <p>化为 2 的幂次秒算：$8 = 2^3,\ 128 = 2^7,\ 4 = 2^2,\ 8192 = 2^{13}$，连同首尾两个 $2$，合起来是 $40 \times 2^{1+3+7+2+13+1} = 40 \times 2^{27}\text{ B}$。因为 $1\text{ GiB} = 2^{30}\text{ B}$，所以 $\frac{40 \times 2^{27}}{2^{30}} = \frac{40}{8} = \mathbf{5.0\text{ GiB}}$！（若当初用 MHA $H_{kv}=40$，这里就会暴涨 5 倍到 $25.0\text{ GiB}$。）</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>2. 🎤 面试追问：为什么现代 LLM（LLaMA、PaLM、MiniMind）几乎把所有 <code>nn.Linear</code> 都设成了 <code>bias=False</code>？有哪个著名开源模型是例外？</summary>
+        <div>
+          <p><strong>为什么去掉偏置 <code>bias=False</code></strong>：① <strong>数学冗余与数值稳定性</strong>：每个子层前紧挨着无偏置的 Pre-RMSNorm，残差流中的常数偏移对后续注意力/门控贡献极小；PaLM 论文实证表明，去掉所有线性层偏置不仅不掉点，反而提升了百亿级模型在半精度下的训练稳定性；② <strong>算子与通信精简</strong>：省去 GEMM 尾声的广播加法与反向跨样本求导归约。</p>
+          <p><strong>面试加分彩蛋（著名例外：Qwen 系列）</strong>：Qwen2 / Qwen2.5 在 FFN 与 <code>o_proj</code> 依然用 <code>bias=False</code>，唯独在注意力的 <strong><code>q_proj / k_proj / v_proj</code> 刻意保留了 <code>bias=True</code></strong>！苏剑林等研究者分析发现，$Q, K$ 上的可学习偏置能为 RoPE 提供静态位置偏置项，显著改善模型在超长上下文外推时的注意力聚焦能力。</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>3. 🎤 面试深挖（AI Infra 核心考点）：教学代码里 GQA 写了 <code>repeat_kv(k, n_rep)</code> 把 KV 复制了 $g$ 份，在真实的 FlashAttention-2 / vLLM PagedAttention CUDA 内核里，真的会在显存里物理复制吗？</summary>
+        <div>
+          <p><strong>绝对不会在 HBM 显存中物理复制！</strong></p>
+          <p>如果真在显存里调 <code>repeat_interleave</code> 写出新张量，不仅多占激活显存，更致命的是<strong>每次 Decode 依然要从慢速 HBM 搬运 $H_q$ 份数据，GQA 加速推理的带宽优势就彻底归零了！</strong></p>
+          <p><strong>真实内核做法</strong>：在 PyTorch eager 模式下至少用零拷贝视图 <code>k[:, :, None, :, :].expand(B, H_kv, g, T, d_k).reshape(...)</code>（若底层算子支持非连续 stride）；而在 <strong>FlashAttention-2 / FlashDecoding / PagedAttention</strong> 内核里，直接通过线程块索引整除映射 <code>kv_head_id = q_head_id // n_rep</code>——同一组的 $g$ 个 Query 头共享加载到 GPU 片上高速 <strong>SRAM（Shared Memory）</strong> 里的同 1 份 $K, V$ 分块，实现真正的<strong>「HBM 读 1 次，片上算 $g$ 次」</strong>！</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §8 延伸阅读 ========== -->
+    <section>
+      <h2><span class="num">08</span>延伸阅读与对照源码</h2>
+      <div class="callout source">
+        <span class="ct">首选一手资料</span>
+        <p>1. 本机参考库交互笔记：<code>04-LLM大模型/教学/04-前馈网络与激活函数.ipynb</code>（Cell#15–16）、<code>08-注意力变种MQA与GQA.ipynb</code>（Cell#4, 11–12）以及集大成篇 <code>09-MiniMind整体架构.ipynb</code>。<br>
+        2. 经典原始论文：Noam Shazeer, <em>GLU Variants Improve Transformer</em> (2020，短短 4 页，提出了席卷全行业的 SwiGLU 与 $\frac{2}{3}\cdot 4d = \frac{8}{3}d$ 缩放法则)；Joshua Ainslie et al., <em>GQA: Training Generalized Multi-Query Transformer Models from Multi-Head Checkpoints</em> (EMNLP 2023，展示了如何从 MHA 模型均值池化无缝微调出 GQA)。</p>
+      </div>
+    </section>
+
+    <!-- LAB:NAV -->
+    <nav class="lab-nav"><a class="prev" href="0004-residual-rmsnorm-prenorm.html"><small>← 上一课</small>深层稳定器：残差梯度高速公路、Pre-Norm vs Post-Norm 与 RMSNorm</a><a class="next" href="../../index.html#w03-Transformer与现代LLM架构"><small>本课题最新一课</small>回到学习地图 · 说「继续」生成下一课</a></nav>
+    <!-- /LAB:NAV -->
+
+    <div class="ask-ai">💬 恭喜跑通 w03 全部 5 节核心架构课！接下来可以说：<code>整理笔记</code>（生成现代 LLM 架构一页速查卡）· <code>练一下</code>（去 <code>concepts/</code> 盲写 RMSNorm / GQA / SwiGLU）· <code>考考我</code>（模拟三层深挖面试）</div>
+    <footer class="lab-footer">生成于 2026-11-01 · lab-teach · 数值来自 Python 金标准（verify_0005.py + PyTorch 双重校验）</footer>
+  </main>
+
+  <aside class="lab-margin"></aside>
+</div>
+
+<!-- LAB:GOLDEN -->
+<script type="application/json" id="lab-golden">{"gate_pre": [2.0, -1.0, -4.0], "gate_silu": [1.76159416, -0.26894142, -0.07194484], "up_val": [1.5, 4.0, 3.0], "hidden_gated": [2.64239123, -1.07576569, -0.21583452], "swiglu_out": [2.10450839, 0.64409665], "llama_dff": 11008, "ffn_swiglu_mparams": 135.266304, "l2_per_tok_mib": 0.5, "l2_32k_gib": 16.0, "l3_per_tok_mib": 0.125, "l3_32k_gib": 4.0, "qwen_per_tok_kib": 56.0, "qwen_32k_gib": 1.75, "quiz_14b_gib": 5.0, "_meta": {"script": "学习/w03-Transformer与现代LLM架构/verify_0005.py", "python": "test", "generated": "2026-11-03"}}</script>
+<!-- /LAB:GOLDEN -->
+
+<script src="../../../.agents/skills/lab-teach/assets/lab.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-math.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-plot.js"></script>
+<script>
+Lab.ready(() => {
+  // ---------- 1. JS 端独立计算 SwiGLU 2x3 手算、8/3d 参数与 KV Cache 账本并对齐金标准 ----------
+  const silu = (z) => z / (1 + Math.exp(-z));
+  const dsilu = (z) => {
+    const s = 1 / (1 + Math.exp(-z));
+    return s * (1 + z * (1 - s));
+  };
+  const gelu = (z) => 0.5 * z * (1 + Math.tanh(Math.sqrt(2 / Math.PI) * (z + 0.044715 * z * z * z)));
+
+  const xVec = [1.0, 2.0];
+  const Wg = [[1.0, -1.0, 0.0], [0.5, 0.0, -2.0]];
+  const Wu = [[0.5, 1.0, 1.0], [0.5, 1.5, 1.0]];
+  const Wd = [[1.0, 0.0], [0.5, -1.0], [0.0, 2.0]];
+
+  const matVecLeft = (v, M) => M[0].map((_, j) => v.reduce((s, vi, i) => s + vi * M[i][j], 0));
+  const gatePre = matVecLeft(xVec, Wg);
+  const gateSilu = gatePre.map(silu);
+  const upVal = matVecLeft(xVec, Wu);
+  const hiddenGated = gateSilu.map((g, i) => g * upVal[i]);
+  const swigluOut = matVecLeft(hiddenGated, Wd);
+
+  const dLlama = 4096;
+  const llamaDff = Math.ceil(((8 / 3) * dLlama) / 256) * 256;
+  const ffnSwigluMParams = (3 * dLlama * llamaDff) / 1e6;
+
+  function kvBytes(layers, hKv, dk, b, t, elemBytes) {
+    return 2 * layers * hKv * dk * b * t * elemBytes;
+  }
+
+  const l2PerTokMib = kvBytes(32, 32, 128, 1, 1, 2) / (1024 * 1024);
+  const l2_32kGib   = kvBytes(32, 32, 128, 1, 32768, 2) / Math.pow(1024, 3);
+  const l3PerTokMib = kvBytes(32, 8,  128, 1, 1, 2) / (1024 * 1024);
+  const l3_32kGib   = kvBytes(32, 8,  128, 1, 32768, 2) / Math.pow(1024, 3);
+  const qwenTokKib  = kvBytes(28, 4,  128, 1, 1, 2) / 1024;
+  const qwen32kGib  = kvBytes(28, 4,  128, 1, 32768, 2) / Math.pow(1024, 3);
+  const quiz14bGib  = kvBytes(40, 8,  128, 4, 8192, 2) / Math.pow(1024, 3);
+
+  Lab.check("gate_pre", gatePre);
+  Lab.check("gate_silu", gateSilu, undefined, { tol: 1e-7 });
+  Lab.check("up_val", upVal);
+  Lab.check("hidden_gated", hiddenGated, undefined, { tol: 1e-7 });
+  Lab.check("swiglu_out", swigluOut, undefined, { tol: 1e-7 });
+  Lab.check("llama_dff", llamaDff);
+  Lab.check("ffn_swiglu_mparams", ffnSwigluMParams, undefined, { tol: 1e-7 });
+  Lab.check("l2_per_tok_mib", l2PerTokMib);
+  Lab.check("l2_32k_gib", l2_32kGib, undefined, { badge: "#sec-pg" });
+  Lab.check("l3_per_tok_mib", l3PerTokMib);
+  Lab.check("l3_32k_gib", l3_32kGib);
+  Lab.check("qwen_per_tok_kib", qwenTokKib);
+  Lab.check("qwen_32k_gib", qwen32kGib);
+  Lab.check("quiz_14b_gib", quiz14bGib);
+
+  // ---------- 2. §3 MHA -> MQA -> GQA 头分组映射可视化 ----------
+  const gHost = document.getElementById("graph-gqa");
+  function renderHeadTopology(mode) {
+    // 展示 8 个 Q 头映射关系：MHA (8 KV), MQA (1 KV), GQA (2 KV 或 4 KV，此处用 MiniMind 8Q -> 4KV 清晰展示 g=2 分组)
+    const qNodes = Array.from({ length: 8 }, (_, i) => ({
+      id: "q" + i,
+      label: "Q" + i,
+      sub: mode === "gqa" ? "组 " + Math.floor(i / 2) : "查询头",
+      x: 56 + i * 81,
+      y: 46,
+      w: 66,
+      h: 40,
+    }));
+    let kvNodes = [];
+    let edges = [];
+    if (mode === "mha") {
+      kvNodes = Array.from({ length: 8 }, (_, i) => ({
+        id: "kv" + i, label: "KV" + i, sub: "独享", x: 56 + i * 81, y: 162, w: 66, h: 42,
+      }));
+      edges = Array.from({ length: 8 }, (_, i) => ({ id: "e" + i, from: "q" + i, to: "kv" + i }));
+    } else if (mode === "mqa") {
+      kvNodes = [{ id: "kv0", label: "唯一公共 KV0", sub: "全场共享 (省 H_q 倍)", x: 340, y: 162, w: 170, h: 44 }];
+      edges = Array.from({ length: 8 }, (_, i) => ({ id: "e" + i, from: "q" + i, to: "kv0" }));
+    } else {
+      kvNodes = Array.from({ length: 4 }, (_, g) => ({
+        id: "kv" + g, label: "KV" + g, sub: "服务 2 个 Q 头", x: 96 + g * 162, y: 162, w: 112, h: 44,
+      }));
+      edges = Array.from({ length: 8 }, (_, i) => ({ id: "e" + i, from: "q" + i, to: "kv" + Math.floor(i / 2) }));
+    }
+    gHost.innerHTML = "";
+    const gr = LabPlot.graph(gHost, { width: 680, height: 210, nodes: qNodes.concat(kvNodes), edges });
+    gr.apply({
+      highlight: kvNodes.map((n) => n.id),
+      edges: edges.map((e) => e.id),
+    });
+  }
+
+  Lab.onStep("#step-gqa", (idx) => {
+    renderHeadTopology(["mha", "mqa", "gqa"][idx] || "gqa");
+  });
+
+  // ---------- 3. §5 实验台一：7B/8B 大模型 KV Cache & 权重显存实时账本计算器 ----------
+  const MODELS = {
+    llama2: { name: "Llama-2-7B (MHA)", paramsB: 6.74, L: 32, Hq: 32, Hkv: 32, dk: 128 },
+    llama3: { name: "Llama-3-8B (GQA)", paramsB: 8.03, L: 32, Hq: 32, Hkv: 8,  dk: 128 },
+    qwen25: { name: "Qwen2.5-7B (GQA)", paramsB: 7.62, L: 28, Hq: 28, Hkv: 4,  dk: 128 },
+  };
+
+  function syncSelects(ctl, map) {
+    const root = ctl.out.parentElement;
+    const sels = root ? root.querySelectorAll("select") : [];
+    const keys = ["model", "wBytes", "kvBytes"];
+    keys.forEach((k, idx) => {
+      if (map[k] !== undefined) {
+        if (sels[idx]) sels[idx].value = String(map[k]);
+        ctl.params[k] = map[k];
+      }
+    });
+  }
+
+  Lab.playground("#pg-kv", {
+    title: "实验台 1：7B/8B 大模型推理显存账本（权重 + KV Cache vs 本机 4080 / 远程 A800 红线）",
+    params: [
+      { name: "T", label: "上下文长度 $T$", min: 512, max: 65536, step: 512, value: 32768, fmt: (v) => String(Math.round(v)) },
+      { name: "B", label: "并发 Batch $B$", min: 1, max: 16, step: 1, value: 1, fmt: (v) => String(Math.round(v)) },
+    ],
+    selects: [
+      {
+        name: "model",
+        label: "模型架构预设",
+        options: [
+          ["llama2", "Llama-2-7B (MHA H_kv=32)"],
+          ["llama3", "Llama-3-8B (GQA H_kv=8)"],
+          ["qwen25", "Qwen2.5-7B (GQA H_kv=4)"],
+        ],
+        value: "llama2",
+      },
+      {
+        name: "wBytes",
+        label: "权重精度",
+        options: [
+          [2, "BF16 / FP16 (2 B/param)"],
+          [1, "INT8 / FP8 (1 B/param)"],
+          [0.5, "INT4 AWQ/GPTQ (0.5 B/param)"],
+        ],
+        value: 2,
+      },
+      {
+        name: "kvBytes",
+        label: "KV Cache 精度",
+        options: [
+          [2, "BF16 / FP16 (2 B/elem)"],
+          [1, "FP8 / INT8 KV (1 B/elem)"],
+          [0.5, "INT4 KV (0.5 B/elem)"],
+        ],
+        value: 2,
+      },
+    ],
+    buttons: [
+      {
+        label: "Llama-2-7B (MHA H_kv=32)",
+        primary: true,
+        onClick: (_p, ctl) => { syncSelects(ctl, { model: "llama2", wBytes: 2, kvBytes: 2 }); ctl.set("B", 1); ctl.set("T", 32768); },
+      },
+      {
+        label: "Llama-3-8B (GQA H_kv=8)",
+        onClick: (_p, ctl) => { syncSelects(ctl, { model: "llama3", wBytes: 2, kvBytes: 2 }); ctl.set("B", 1); ctl.set("T", 32768); },
+      },
+      {
+        label: "Qwen2.5-7B (GQA H_kv=4)",
+        onClick: (_p, ctl) => { syncSelects(ctl, { model: "qwen25", wBytes: 2, kvBytes: 2 }); ctl.set("B", 1); ctl.set("T", 32768); },
+      },
+      {
+        label: "本机 4080 12GB 甜点部署 (Qwen INT4 + 32K)",
+        onClick: (_p, ctl) => { syncSelects(ctl, { model: "qwen25", wBytes: 0.5, kvBytes: 2 }); ctl.set("B", 1); ctl.set("T", 32768); },
+      },
+    ],
+    caption: "上图柱状对比当前模型的「权重 vs KV Cache vs 合计显存 (GiB)」；下图曲线展示三款模型随上下文 $T$ 延长的总显存斜率及 12 GiB / 80 GiB 显卡硬件上限红线。",
+    render(p, out) {
+      out.innerHTML = '<div class="kv-bars"></div><div class="kv-chart"></div><div class="kv-verdict small"></div>';
+      const M = MODELS[p.model] || MODELS.llama2;
+      const T = Math.round(p.T);
+      const B = Math.round(p.B);
+      const wB = Number(p.wBytes);
+      const kvB = Number(p.kvBytes);
+
+      const weightGib = (M.paramsB * 1e9 * wB) / Math.pow(1024, 3);
+      const kvGib = kvBytes(M.L, M.Hkv, M.dk, B, T, kvB) / Math.pow(1024, 3);
+      const totalGib = weightGib + kvGib;
+      const perTokKib = kvBytes(M.L, M.Hkv, M.dk, 1, 1, kvB) / 1024;
+
+      LabPlot.bars(out.querySelector(".kv-bars"), [weightGib, kvGib, totalGib], {
+        labels: ["模型权重 (GiB)", "KV Cache (GiB)", "推理总计 (GiB)"],
+        decimals: 2,
+        highlight: 1,
+        color: 1,
+        hlColor: 2,
+        max: Math.max(15, totalGib * 1.18),
+        height: 215,
+      });
+
+      const ts = [0, 8192, 16384, 32768, 49152, 65536];
+      const totFn = (mod) => (tVal) =>
+        (mod.paramsB * 1e9 * wB + kvBytes(mod.L, mod.Hkv, mod.dk, B, tVal, kvB)) / Math.pow(1024, 3);
+
+      const maxCurve = Math.max(86, totFn(MODELS.llama2)(65536) * 1.06);
+      LabPlot.chart(out.querySelector(".kv-chart"), {
+        x: [0, 65536],
+        y: [0, maxCurve],
+        xLabel: "上下文长度 T (tokens)",
+        yLabel: "总显存 (GiB)",
+        height: 265,
+      })
+        .hline(12, { color: 4, label: "本机 RTX 4080 Laptop 红线 (12 GiB)" })
+        .hline(80, { color: 3, label: "远程 A800 红线 (80 GiB)" })
+        .vline(T, { color: 5, label: `当前 T=${T}` })
+        .line(ts, ts.map(totFn(MODELS.llama2)), { label: "Llama-2 MHA", color: 4, dash: p.model !== "llama2", width: p.model === "llama2" ? 3.0 : 1.8 })
+        .line(ts, ts.map(totFn(MODELS.llama3)), { label: "Llama-3 GQA(8)", color: 2, dash: p.model !== "llama3", width: p.model === "llama3" ? 3.0 : 1.9 })
+        .line(ts, ts.map(totFn(MODELS.qwen25)), { label: "Qwen2.5 GQA(4)", color: 1, dash: p.model !== "qwen25", width: p.model === "qwen25" ? 3.2 : 2.0 })
+        .point(T, totalGib, { color: 1, label: `${Lab.fmt(totalGib, 2)} GiB` })
+        .draw();
+
+      const verdictEl = out.querySelector(".kv-verdict");
+      if (totalGib <= 10.8) {
+        verdictEl.innerHTML = `<p style="margin:6px 0 2px;color:var(--c-ok, #16a34a)"><b>✅ 硬件诊断：可在本机 RTX 4080 Laptop (12GB) 流畅运行！</b>（权重 + KV 共 ${Lab.fmt(totalGib, 2)} GiB，预留 >1.2 GiB 激活与 CUDA 上下文余量）</p>`;
+      } else if (totalGib <= 76) {
+        verdictEl.innerHTML = `<p style="margin:6px 0 2px;color:var(--c-warn, #d97706)"><b>⚠️ 硬件诊断：本机 RTX 4080 (12GB) 必定 OOM！</b>请切换 INT4 量化，或移步<b>远程单卡 A800 (80GB)</b> 运行（当前需 ${Lab.fmt(totalGib, 2)} GiB）。</p>`;
+      } else {
+        verdictEl.innerHTML = `<p style="margin:6px 0 2px;color:var(--c-danger, #dc2626)"><b>❌ 硬件诊断：单卡 A800 (80GB) 亦会 OOM！</b>（当前需 ${Lab.fmt(totalGib, 2)} GiB，需多卡 Tensor Parallelism 或开启 INT8/INT4 KV Cache 量化）。</p>`;
+      }
+
+      Lab.readout(out, {
+        "当前架构 ($H_q / H_{kv}$)": `${M.Hq} / ${M.Hkv} (省 ${M.Hq / M.Hkv}×)`,
+        "单词单样本 KV": `${Lab.fmt(perTokKib, 1)} KiB/tok`,
+        "模型权重显存": `${Lab.fmt(weightGib, 2)} GiB`,
+        "KV Cache 显存": `${Lab.fmt(kvGib, 2)} GiB`,
+        "权重 + KV 合计": `${Lab.fmt(totalGib, 2)} GiB`,
+      });
+    },
+  });
+
+  // ---------- 4. §5 实验台二：SiLU vs GELU vs ReLU 负半轴与门控导数对比 ----------
+  Lab.playground("#pg-act", {
+    title: "实验台 2：为什么 SwiGLU 选 SiLU 而不是 ReLU？（观察负半轴软缓冲与非零导数）",
+    params: [
+      { name: "z", label: "门控输入 $z$", min: -4.5, max: 4.0, step: 0.05, value: -1.0 },
+    ],
+    buttons: [
+      { label: "定位 §2 算例负门控 (z = -1.0)", primary: true, onClick: (_p, ctl) => ctl.set("z", -1.0) },
+      { label: "定位 SiLU 极小负谷底 (z = -1.28)", onClick: (_p, ctl) => ctl.set("z", -1.28) },
+    ],
+    caption: "紫实线为 $\\text{SiLU}(z) = z\\sigma(z)$，橙虚线为其导数 $\\text{SiLU}'(z)$，灰虚线为传统 $\\text{ReLU}(z)$（负半轴完全死寂）。",
+    render(p, out) {
+      out.innerHTML = '<div class="act-chart"></div>';
+      const z = p.z;
+      LabPlot.chart(out.querySelector(".act-chart"), {
+        x: [-4.5, 4.0],
+        y: [-0.6, 4.0],
+        xLabel: "门控线性输出 z = x·W_gate",
+        yLabel: "激活值 / 导数",
+        height: 250,
+      })
+        .fn((t) => Math.max(0, t), { label: "ReLU(z)", color: 3, dash: true })
+        .fn(gelu, { label: "GELU(z)", color: 5, dash: true })
+        .fn(silu, { label: "SiLU(z)", color: 1, width: 2.8 })
+        .fn(dsilu, { label: "SiLU'(z) 局部导数", color: 2, dash: true })
+        .vline(z, { color: 4, label: `z=${Lab.fmt(z, 2)}` })
+        .point(z, silu(z), { color: 1 })
+        .point(z, dsilu(z), { color: 2 })
+        .draw();
+
+      Lab.readout(out, {
+        "输入 $z$": z,
+        "$\\text{SiLU}(z) = z\\sigma(z)$": silu(z),
+        "$\\text{SiLU}'(z)$ 局部斜率": dsilu(z),
+        "$\\text{ReLU}(z)$ / $\\text{ReLU}'(z)$": `${Lab.fmt(Math.max(0, z), 4)} / ${z > 0 ? 1 : 0}`,
+      }, 4);
+    },
+  });
+});
+</script>
+</body>
+</html>

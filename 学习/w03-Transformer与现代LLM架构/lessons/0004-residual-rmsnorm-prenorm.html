@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>深层稳定器：残差梯度高速公路、Pre-Norm vs Post-Norm 与 RMSNorm · w03-Transformer与现代LLM架构</title>
+<meta name="lab:topic" content="w03-Transformer与现代LLM架构">
+<meta name="lab:num" content="4">
+<meta name="lab:step" content="4">
+<meta name="lab:date" content="2026-11-01">
+<link rel="stylesheet" href="../../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body>
+<div class="lab-layout">
+  <nav id="lab-toc" aria-label="目录"></nav>
+
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../../index.html">📚 学习地图</a> / <a href="../../index.html#w03-Transformer与现代LLM架构">w03-Transformer与现代LLM架构</a> / 第 4 课</div>
+      <h1>深层稳定器：残差梯度高速公路、Pre-Norm vs Post-Norm 与 RMSNorm</h1>
+      <p class="subtitle">为什么把归一化往前挪半步、再砍掉均值中心化，就能让上百层大模型告别漫长 Warmup 稳如磐石？</p>
+      <div class="chips">
+        <span class="chip">⏱ 约 20 分钟</span>
+        <span class="chip">🧭 计划步骤 4 / 5</span>
+        <span class="chip">📅 2026-11-01</span>
+        <span class="chip">📓 04-LLM大模型/05-层归一化LayerNorm · 09-MiniMind整体架构</span>
+      </div>
+    </header>
+
+    <div class="win">
+      <div class="icon">🎯</div>
+      <div>
+        <h4>本课收获</h4>
+        <p>手算 4 维向量在 LayerNorm 与 RMSNorm 下的精确输出与反向缩放差异，从链式法则推导出 Pre-Norm 为什么比 Post-Norm 更稳，并讲清工业级 <code>RMSNorm.forward</code> <strong>「先升 FP32 算 <code>rsqrt</code>、再转回半精度」</strong>的底层防坑逻辑。</p>
+      </div>
+    </div>
+
+    <div class="prereq">
+      <b>前置依赖：</b>
+      <span class="known">✓ 链式法则与加法门局部导数为 1（见 <a href="../../w01-自动微分与P1/lessons/0001-scalar-autograd-chain.html">w01 第 1 课</a>）</span> ·
+      <span class="known">✓ 多头自注意力与 RoPE 子层接口（本专题第 1–3 课）</span> ·
+      <span class="gap">△ 总体方差统计口径与 FP16/BF16 半精度溢出边界（本课 §3–§4 顺手补齐）</span>
+    </div>
+
+    <!-- ========== §1 痛点与直觉 ========== -->
+    <section>
+      <h2><span class="num">01</span>痛点与直觉：网络叠到 32 层为什么训不动？</h2>
+      <p>如果把 32 层神经网络简单首尾串接成 $x_{l+1} = F_l(x_l)$，没有任何残差旁路或归一化，会发生什么？无论是前向激活尺度还是反向传播的雅可比矩阵，都会变成 <strong>32 次连乘</strong>：</p>
+      <ul>
+        <li>若每层有效缩放因子略大于 $1$（比如 $1.5$），穿过 32 层后变为 $1.5^{32} \approx \mathbf{4.31 \times 10^5}$——前向数值与反向梯度瞬间<strong>指数级爆炸</strong>，FP16 直接打出 <code>NaN</code>；</li>
+        <li>若每层缩放因子略小于 $1$（比如 $0.7$），穿过 32 层后只剩 $0.7^{32} \approx \mathbf{1.10 \times 10^{-5}}$——顶层误差传到底层已经衰减近 9 万倍，前几层权重彻底「冻死」（<strong>梯度消失</strong>）。</li>
+      </ul>
+      <aside class="sidenote">
+        <b>大模型到底有多深？</b> Llama-2-7B 有 32 个 Block（共 64 个子层：32 个 Attention + 32 个 FFN）；Llama-3-70B 高达 80 个 Block（160 个子层）；DeepSeek-V3 有 61 层。没有残差与归一化，超过 8 层就几乎无法收敛。
+      </aside>
+      <p>现代开源 LLM 能稳稳堆到上百层，全靠两根定海神针协同工作：<strong>Pre-Norm 残差连接（保反向梯度畅通无阻）</strong> + <strong>RMSNorm（保每层子层输入幅度恒定且极省带宽）</strong>。</p>
+
+      <div class="callout intuition">
+        <span class="ct">立交主干高速 vs 匝道限速站</span>
+        <p><strong>Post-Norm（2017 原版 Transformer）</strong>相当于把归一化收费站建在<strong>主干高速路</strong>上：每过一层，主干信号和回传梯度都要被强行除以一次标准差 $\sigma$，层数一深照样衰减；<br>
+        <strong>Pre-Norm（LLaMA / Qwen / MiniMind 现代标配）</strong>把归一化挪到了进入子层的<strong>支路匝道口</strong>：主干从第 1 层到最后一层是 <strong>100% 纯净加法直通车</strong>，顶层梯度零损耗直达底层！</p>
+      </div>
+    </section>
+
+    <!-- ========== §2 残差高速公路与 Pre-Norm vs Post-Norm 推导 ========== -->
+    <section>
+      <h2><span class="num">02</span>残差高速公路与 Pre-Norm vs Post-Norm 生死差异</h2>
+      <p>点击下方「下一步」（或按键盘 <kbd>←</kbd> <kbd>→</kbd>），一步步推导残差连接如何改写反向传播链式法则，并对比图上回传路径的本质区别：</p>
+
+      <div class="lab-figure">
+        <div id="graph-res"></div>
+        <figcaption>结构数据流与反向梯度通道示意：高亮节点与边展示当前步骤关注的主干/支路耦合关系。</figcaption>
+      </div>
+
+      <div class="lab-stepper" id="step-res" data-title="从残差递归展开到 Pre-Norm 直通恒等映射" data-mode="accumulate">
+        <div class="step" data-title="Step 1 · ResNet 残差核心与跨层递归展开">
+          <p>设第 $l$ 层输入为 $x_l \in \mathbb{R}^d$，子层变换（Attention 或 FFN）记为 $F_l(\cdot)$。残差连接不再让子层直接拟合目标映射，而是<strong>只学习叠加在原输入上的增量</strong>：</p>
+          <p>$$x_{l+1} = x_l + F_l(x_l)$$</p>
+          <p>将上式从任意浅层 $l$ 一路递归展开到顶层 $L$，主干输入被完好保留，所有深层输出只是沿途增量的累加：</p>
+          <p>$$x_L = x_l + \sum_{i=l}^{L-1} F_i(x_i)$$</p>
+        </div>
+
+        <div class="step" data-title="Step 2 · 反向链式求导：雷打不动的单位阵 I">
+          <p>这一步用多元链式法则对浅层激活 $x_l$ 求损失 $\mathcal{L}$ 的梯度（回忆 <a href="../../w01-自动微分与P1/lessons/0001-scalar-autograd-chain.html">w01 第 1 课</a>：<strong>加法门 $a+b$ 对两侧输入的局部导数恒为 $1$</strong>，推广到向量就是单位矩阵 $\mathbf{I}$！）：</p>
+          <p>$$\frac{\partial \mathcal{L}}{\partial x_l} = \frac{\partial \mathcal{L}}{\partial x_L}\frac{\partial x_L}{\partial x_l} = \frac{\partial \mathcal{L}}{\partial x_L}\!\left(\mathbf{I} + \frac{\partial}{\partial x_l}\sum_{i=l}^{L-1} F_i(x_i)\right)$$</p>
+          <p>盯紧括号里那个<strong>与权重完全无关的单位阵 $\mathbf{I}$</strong>：原本危险的「连乘积 $\prod J_i$」被改写成了「$\mathbf{I} + \text{支路项}$」！哪怕训练初期残差支路权重全接近 $0$，顶层梯度 $\frac{\partial \mathcal{L}}{\partial x_L}$ 也能沿着 $\mathbf{I}$ <strong>原封不动直达第 1 层</strong>。</p>
+        </div>
+
+        <div class="step" data-title="Step 3 · Post-Norm vs Pre-Norm：归一化放哪儿决定生死">
+          <p>把归一化层 $\text{Norm}(\cdot)$ 塞进残差块时，位置差半步，反向动力学天差地别：</p>
+          <ul>
+            <li><strong>Post-Norm（2017 原版）</strong>：$x_{l+1} = \text{LN}\big(x_l + F_l(x_l)\big)$。归一化卡死在<strong>残差主干</strong>上！初始化时若 $\text{Var}(x_l)=1,\ \text{Var}(F_l)=\alpha^2$，相加后方差膨胀为 $1+\alpha^2$，每次反向穿过 $\text{LN}$ 主干梯度都要被乘上缩放因子 $\frac{1}{\sqrt{1+\alpha^2}} &lt; 1$。32 层连乘下来底层梯度大幅缩水，而顶层梯度极大——<strong>必须配数千步 Learning Rate Warmup 小心翼翼热身，否则起步直接梯度爆炸崩盘</strong>。</li>
+            <li><strong>Pre-Norm（GPT-2/3、LLaMA、Qwen、MiniMind 全员采用）</strong>：$x_{l+1} = x_l + F_l\big(\text{RMSNorm}(x_l)\big)$。归一化退居<strong>残差支路入口</strong>，主干从词嵌入直到最后一层 <code>final RMSNorm</code> 是 <strong>100% 纯加法高速公路</strong>，各层梯度范数均匀平稳，支持更大峰值学习率稳健收敛！</li>
+          </ul>
+        </div>
+      </div>
+
+      <table class="shape">
+        <tr><th>架构范式</th><th>单层递推公式</th><th>主干反向连乘因子</th><th>训练表现与代表模型</th></tr>
+        <tr><td>Plain Net（无残差）</td><td>$x_{l+1} = F_l(x_l)$</td><td>$\prod_{i=l}^{L-1} J_{F_i}$（指数爆炸或消失）</td><td>超过 8–12 层极难直接收敛（早期 VGG）</td></tr>
+        <tr><td>Post-Norm</td><td>$x_{l+1} = \text{LN}(x_l + F_l(x_l))$</td><td>主干每层乘 $\approx \frac{1}{\sqrt{1+\alpha^2}}$</td><td>强依赖长 Warmup，超深层易崩（2017 Transformer / BERT）</td></tr>
+        <tr><td><strong>Pre-Norm（现代主流）</strong></td><td>$x_{l+1} = x_l + F_l(\text{RMSNorm}(x_l))$</td><td><strong>主干恒为 $\mathbf{I}$（零阻尼直通）</strong></td><td>深层梯度平坦，训练极稳（LLaMA / Qwen / DeepSeek / MiniMind）</td></tr>
+      </table>
+    </section>
+
+    <!-- ========== §3 从 BatchNorm → LayerNorm → RMSNorm ========== -->
+    <section>
+      <h2><span class="num">03</span>从 BatchNorm → LayerNorm → RMSNorm：4 维向量手算对比</h2>
+
+      <h3>一句话分清 BatchNorm vs LayerNorm：为什么 NLP 绝不用 BN？</h3>
+      <p><strong>BatchNorm（CV 常用）</strong>跨样本对同一通道求均值方差（沿 $(B, T)$ 维归约）：但在大模型里，一个 Batch 内句子长短不一、尾部塞满无意义的 <code>&lt;pad&gt;</code> 会严重污染统计量；更致命的是自回归推理时往往 <code>Batch=1, T_cur=1</code>，跨样本统计直接失灵！<br>
+      <strong>LayerNorm / RMSNorm</strong> 则在<strong>每个 Token 自己的特征维 $d$（最后一维 <code>axis=-1</code>）</strong>上独立归一化：输入形状 <code>(B, T, d)</code> 算出统计量形状 <code>(B, T, 1)</code>，<strong>与 Batch 大小、序列长度、Padding 掩码 100% 解耦，训练与推理行为完全一致！</strong></p>
+
+      <aside class="sidenote">
+        <b>总体方差口径提醒</b>（取自 <code>05-层归一化LayerNorm.ipynb</code> Cell#4）：LayerNorm 求方差除以特征维 $d$（无偏估计 $d-1$ 的贝塞尔校正<strong>不用</strong>），对应 PyTorch <code>var(..., unbiased=False)</code>。
+      </aside>
+
+      <h3>具体数字手算：同一组 4 维特征过 LayerNorm vs RMSNorm</h3>
+      <p>取单个 Token 的 $d=4$ 维向量 $x = [2.0,\ -1.0,\ 3.0,\ 0.0]$，初始缩放 $\gamma = [1, 1, 1, 1]$，偏置 $\beta = [0, 0, 0, 0]$，防除零常数 $\epsilon = 10^{-5}$（所有小数均经 <code>verify_0004.py</code> 与 PyTorch <code>nn.LayerNorm</code> / <code>nn.RMSNorm</code> 双重校验）：</p>
+
+      <div class="lab-tabs" data-group="norm-calc">
+        <div class="tab" data-label="① LayerNorm（两趟归约扫描）">
+          <div class="callout formula">
+            <span class="ct">先求均值中心化，再求方差缩放</span>
+            <ol>
+              <li><strong>第 1 趟归约求均值 $\mu$</strong>：
+                $$\mu = \frac{1}{4}(2.0 - 1.0 + 3.0 + 0.0) = \mathbf{1.0}$$</li>
+              <li><strong>减去均值中心化</strong>：$x - \mu = [1.0,\ -2.0,\ 2.0,\ -1.0]$（此时元素和严格为 $0$）。</li>
+              <li><strong>第 2 趟归约求总体方差 $\sigma^2$</strong>：
+                $$\sigma^2 = \frac{1}{4}\big(1.0^2 + (-2.0)^2 + 2.0^2 + (-1.0)^2\big) = \frac{10}{4} = \mathbf{2.5}$$</li>
+              <li><strong>除以标准差缩放</strong>：$\sqrt{\sigma^2 + \epsilon} = \sqrt{2.50001} \approx \mathbf{1.581142}$，逐元素相除得：
+                $$\hat{x}_{\text{LN}} = \frac{x - \mu}{\sqrt{\sigma^2 + \epsilon}} \approx \mathbf{[0.632454,\ -1.264909,\ 1.264909,\ -0.632454]}$$</li>
+            </ol>
+          </div>
+        </div>
+
+        <div class="tab" data-label="② RMSNorm（仅一趟归约 · 现代标配）">
+          <div class="callout lab">
+            <span class="ct">砍掉均值 $\mu$ 与偏置 $\beta$，只按均方根 RMS 缩放</span>
+            <ol>
+              <li><strong>唯一 1 趟归约求均方值 $\text{mean}(x^2)$</strong>：
+                $$\frac{1}{4}\big(2.0^2 + (-1.0)^2 + 3.0^2 + 0.0^2\big) = \frac{4 + 1 + 9 + 0}{4} = \frac{14}{4} = \mathbf{3.5}$$</li>
+              <li><strong>求均方根因子 $\text{RMS}(x)$</strong>：
+                $$\text{RMS}(x) = \sqrt{3.5 + 10^{-5}} = \sqrt{3.50001} \approx \mathbf{1.870831}$$</li>
+              <li><strong>直接缩放输出</strong>（原向量中的 $0.0$ 依然保持 $0.0$，不做平移！）：
+                $$y_{\text{RMS}} = \frac{x}{\text{RMS}(x)} \odot \gamma \approx \mathbf{[1.069043,\ -0.534522,\ 1.603565,\ 0.000000]}$$</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+
+      <div class="eq-explain">
+        <span class="eq-tag">RMSNorm</span>
+        <p>$$\text{RMS}(x) = \sqrt{\frac{1}{d}\sum_{i=1}^{d} x_i^2 + \epsilon}, \qquad y = \frac{x}{\text{RMS}(x)} \odot \gamma$$</p>
+        <dl>
+          <dt>$x \in \mathbb{R}^{B \times T \times d}$</dt><dd>子层输入张量，归约仅沿最后一维特征维 $d$ 进行，统计量形状为 $(B, T, 1)$</dd>
+          <dt>$\gamma \in \mathbb{R}^d$</dt><dd>唯一可学习逐通道缩放向量（初始化全 $1$；彻底去掉了偏置参数 $\beta$，参数量省一半）</dd>
+          <dt>$\epsilon \in \{10^{-6}, 10^{-5}\}$</dt><dd>防零向量除零微扰项（LLaMA / MiniMind 默认取 <code>1e-6</code>），必须加在根号<strong>内部</strong></dd>
+          <dt>提速 10%–30% 的真相</dt><dd>归一化算子计算量极小，瓶颈全卡在 <strong>GPU HBM 显存带宽读写（Memory-Bandwidth Bound）</strong>！Zhang &amp; Sennrich (2019) 证明均值中心化对精度几乎无贡献，砍掉 $\mu$ 后省去一趟跨线程归约同步与一次全局读写，算子融合后实测显著提速</dd>
+        </dl>
+      </div>
+
+      <details class="reveal deep">
+        <summary>选读深挖：LayerNorm vs RMSNorm 反向传播输入梯度公式对比（少掉哪一项？）</summary>
+        <div>
+          <p>对照 <code>05-层归一化LayerNorm.ipynb</code> Cell#6 与 Cell#14 的链式展开：记 $\hat{dx} = d\text{out} \odot \gamma$，归一化输出记为 $\hat{x}$。</p>
+          <p><strong>LayerNorm 反向梯度</strong>有 3 条链式路径（$\hat{x}$ 直传、方差 $\sigma^2$ 依赖 $x$、均值 $\mu$ 依赖 $x$），化简后为：</p>
+          <p>$$\frac{\partial \mathcal{L}}{\partial x}\Big|_{\text{LN}} = \frac{1}{\sqrt{\sigma^2 + \epsilon}}\Big(\hat{dx} \;-\; \underbrace{\mathrm{mean}(\hat{dx})}_{\text{抵消 }\mu\text{ 移动}} \;-\; \hat{x}\odot\mathrm{mean}(\hat{dx}\odot\hat{x})\Big)$$</p>
+          <p><strong>RMSNorm 反向梯度</strong>因为没有均值中心化，直接砍掉了中间的 $-\mathrm{mean}(\hat{dx})$ 归约项：</p>
+          <p>$$\frac{\partial \mathcal{L}}{\partial x}\Big|_{\text{RMS}} = \frac{1}{\text{RMS}(x)}\Big(\hat{dx} \;-\; \hat{x}\odot\mathrm{mean}(\hat{dx}\odot\hat{x})\Big)$$</p>
+          <p>取上游梯度 $d\text{out} = [1.0, -0.5, 0.2, 0.8]$ 在本节 $x = [2, -1, 3, 0]$ 处验证：$dx_{\text{LN}} \approx [0.2941, -0.3510, -0.3131, 0.3700]$（分量和必为 $0$），而 $dx_{\text{RMS}} \approx [0.2978, -0.1489, -0.2482, 0.4276]$（与径向 $x$ 点积必为 $0$，因为缩放不改变方向只投影到球面切空间！）。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §4 代码讲解 ========== -->
+    <section>
+      <h2><span class="num">04</span>代码讲解：MiniMind <code>RMSNorm</code> 与 <code>MiniMindBlock</code> 源码拆解</h2>
+      <p>先看 <code>09-MiniMind整体架构.ipynb</code> 中的核心模块实现，再重点拆解工业级混合精度（BF16 / FP16）训练时<strong>最容易踩爆 <code>NaN</code> 的数据类型转换细节</strong>：</p>
+
+      <h3>模块一：<code>RMSNorm</code> 前向原理与工业级 PyTorch 混合精度防坑</h3>
+      <div class="code-walk" data-dim>
+<pre data-file="../04-LLM大模型/教学/09-MiniMind整体架构.ipynb · Cell#9" data-start="1"><code class="language-python">class RMSNorm:
+    def __init__(self, dim, eps=cfg['rms_norm_eps']):
+        self.gamma = np.ones(dim)                 # 可学习缩放，初始全 1
+        self.eps = eps
+    def __call__(self, x):
+        rms = np.sqrt(np.mean(x ** 2, axis=-1, keepdims=True) + self.eps)
+        return x / rms * self.gamma
+
+x_in = np.random.randn(B, T, cfg['hidden_size'])
+out = RMSNorm(cfg['hidden_size'])(x_in)
+print('RMSNorm  :', x_in.shape, '-&gt;', out.shape, '| 每行 RMS≈1：', np.round(np.sqrt(np.mean(out**2, -1))[0, :3], 4))</code></pre>
+        <ol class="walk">
+          <li data-lines="2-4"><strong>参数精简</strong>：只注册长度为 <code>dim</code> 的缩放向量 <code>gamma</code>（PyTorch 中为 <code>nn.Parameter(torch.ones(dim))</code>），初始化全 1 保证起步等价于单位尺度变换，无偏置 <code>beta</code>。</li>
+          <li data-lines="6-7"><strong>最后一维独立归约</strong>：<code>axis=-1, keepdims=True</code> 把 <code>(B, T, d)</code> 压成 <code>(B, T, 1)</code>，每个 Token 只算自己的均方根，随后利用广播机制完成逐通道缩放。</li>
+          <li data-lines="9-11"><strong>不改变张量形状</strong>：输入输出严格同为 <code>(B, T, hidden_size)</code>，初始阶段每行输出向量的均方根 $\sqrt{\text{mean}(y^2)} \approx 1.0000$。</li>
+        </ol>
+      </div>
+
+      <div class="callout warn">
+        <span class="ct">工业级核心防坑：为什么 PyTorch 版 <code>RMSNorm.forward</code> 必须先 <code>.float()</code> 再 <code>.type_as(x)</code>？</span>
+        <p>在 LLaMA、Qwen 与 MiniMind 的真实 PyTorch 训练源码中，<code>RMSNorm.forward</code> 绝不会直接在半精度张量上算 <code>x ** 2</code>，而是严格写成下面三步：</p>
+<pre data-file="MiniMind / LLaMA 工业级 PyTorch 写法" data-start="1"><code class="language-python">class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def _norm(self, x: torch.Tensor) -&gt; torch.Tensor:
+        return x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
+
+    def forward(self, x: torch.Tensor) -&gt; torch.Tensor:
+        # 1) .float() 升 FP32 防平方溢出与累加截断 → 2) rsqrt 硬件倒数平方根 → 3) .type_as(x) 转回 BF16/FP16
+        return self.weight * self._norm(x.float()).type_as(x)</code></pre>
+        <ul>
+          <li><strong>原因 ① 防 FP16 平方上溢（Overflow → NaN）</strong>：FP16 最大可表示正数仅为 <code>65504</code>。大模型深层常出现幅度破百的异常激活通道（Outlier Features），一旦某个分量 $|x_i| = 300 &gt; 256$，在 FP16 下直接算 <code>x.pow(2)</code> 得到 $90000 &gt; 65504 \implies \text{inf}$，紧接着 <code>x / inf = 0</code> 或梯度 <code>NaN</code> 瞬间毁掉整轮训练！升到 FP32（上限 $3.4 \times 10^{38}$）则稳如泰山。</li>
+          <li><strong>原因 ② 防 BF16 累加精度截断与硬件加速</strong>：BF16 虽然指数位宽不怕溢出，但尾数只有 7 bit（不到 3 位十进制有效数字），对 $d=4096$ 个数做平方平均极易发生「大数吃小数」且令 <code>eps=1e-6</code> 失效；同时用 <code>torch.rsqrt</code> 调用 GPU SFU 硬件单指令直接算 $1/\sqrt{\cdot}$，省去一次浮点除法。</li>
+          <li><strong>原因 ③ 为什么最后必须 <code>.type_as(x)</code>？</strong>如果不把归一化结果转回输入的 <code>bfloat16 / float16</code>，下游紧接着的 <code>q_proj / k_proj</code> 线性层要么报 dtype 不匹配错误，要么被迫退化为慢速 FP32 矩阵乘，Tensor Core 吞吐量直接腰斩！</li>
+        </ul>
+      </div>
+
+      <h3>模块二：<code>MiniMindBlock</code> 中的 Pre-Norm 双残差骨架</h3>
+      <div class="code-walk" data-dim>
+<pre data-file="../04-LLM大模型/教学/09-MiniMind整体架构.ipynb · Cell#19" data-start="1"><code class="language-python">class MiniMindBlock:
+    def __init__(self, cfg, layer_id):
+        self.norm1 = RMSNorm(cfg['hidden_size'])
+        self.attn = GQAAttention(cfg, seed=3 + layer_id)
+        self.norm2 = RMSNorm(cfg['hidden_size'])
+        self.ffn = SwiGLU(cfg, seed=5 + layer_id)
+    def forward(self, h, freqs_cis, mask=None, cache=None, positions=0):
+        # 子层 1：RMSNorm → GQA 注意力 → 残差
+        a, kvcache = self.attn.forward(self.norm1(h), freqs_cis, mask, cache, positions)
+        h = h + a
+        # 子层 2：RMSNorm → SwiGLU → 残差
+        h = h + self.ffn(self.norm2(h))
+        return h, kvcache
+
+block = MiniMindBlock(cfg, 0)
+o_b, _ = block.forward(emb_in, freqs_cis, positions=0)
+print('MiniMindBlock:', emb_in.shape, '-&gt;', o_b.shape)</code></pre>
+        <ol class="walk">
+          <li data-lines="3-6"><strong>两个独立归一化实例</strong>：<code>self.norm1</code> 服务 Attention，<code>self.norm2</code> 服务 FFN。两者各自拥有独立的可学习缩放向量 <code>gamma</code>，<strong>绝不能共用同一个实例</strong>！</li>
+          <li data-lines="9-10"><strong>第一段 Pre-Norm 残差（Token 间混合）</strong>：先拿 <code>self.norm1(h)</code> 把幅度稳住送入 <code>attn</code>，算完增量 <code>a</code> 后直接加回<strong>未经归一化的原主干 <code>h</code></strong>。</li>
+          <li data-lines="12-13"><strong>第二段 Pre-Norm 残差（通道内非线性加工）</strong>：同理 <code>h = h + self.ffn(self.norm2(h))</code>。注意整座 $L$ 层大厦全部走完后，进最终分类头 <code>lm_head</code> 之前还必须补上<strong>第 $2L+1$ 个 <code>final RMSNorm</code></strong>，用来兜底驯服一路累加膨胀的主干方差！</li>
+        </ol>
+      </div>
+    </section>
+
+    <!-- ========== §5 交互实验 ========== -->
+    <section>
+      <h2 id="sec-pg"><span class="num">05</span>交互实验：深层梯度传播曲线 &amp; 4 维归一化实时对比</h2>
+      <p>下面提供两个联动实验台：① 拖动网络深度 $L$ 与支路雅可比因子 $\alpha$，直观对比无残差 Plain Net、Post-Norm 与 Pre-Norm 从顶层 $l=L$ 回传到底层 $l=0$ 的梯度范数对数曲线；② 亲手拨动 4 维向量分量，验证 LayerNorm 的「平移不变性」与 RMSNorm 的差异：</p>
+
+      <div id="pg-grad"></div>
+
+      <p class="small muted">💡 <strong>必试观察 1</strong>：点「梯度爆炸现场 (α=1.15, L=64)」，无残差网络红线瞬间冲破 $10^3$；再切回默认 $\alpha=0.70, L=32$，观察 Post-Norm 橙虚线在底层跌到 $1.69\times 10^{-3}$，而 Pre-Norm 紫实线全程稳守在 $10^0 \sim 10^{0.6}$ 的黄金走廊！</p>
+
+      <div id="pg-norm4d"></div>
+
+      <p class="small muted">💡 <strong>必试观察 2</strong>：点击「全体平移 +5.0（验证不变性）」，把 $[2, -1, 3, 0]$ 变成 $[7, 4, 8, 5]$——你会发现 <strong>LayerNorm 输出纹丝不动</strong>（仍为 $[0.6325, -1.2649, \dots]$），而 <strong>RMSNorm 输出全部变为正数</strong>（因为它不做均值中心化，只具缩放不变性，不具平移不变性！）。</p>
+    </section>
+
+    <!-- ========== §6 小结 ========== -->
+    <section>
+      <h2><span class="num">06</span>小结</h2>
+      <div class="callout summary">
+        <span class="ct">本课核心四句话</span>
+        <ul>
+          <li><strong>残差恒等高速公路</strong>：$x_L = x_l + \sum F_i$ 使反向雅可比矩阵恒带单位阵 $\mathbf{I}$，把危险的跨层梯度连乘变成加法保底。</li>
+          <li><strong>Pre-Norm 胜在主干纯净</strong>：Post-Norm 把归一化卡在主干上每次反向除以 $\sigma$，深层梯度衰减严重；Pre-Norm 把归一化移入支路入口，主干零阻尼直通到底（仅需在 <code>lm_head</code> 前补一个 Final Norm）。</li>
+          <li><strong>RMSNorm 极简高效</strong>：砍掉 LayerNorm 的均值 $\mu$ 与偏置 $\beta$，只算一趟均方根 $\text{RMS}(x) = \sqrt{\text{mean}(x^2)+\epsilon}$，省去一次 HBM 显存读写归约，提速 10%–30% 且精度无损。</li>
+          <li><strong>混合精度铁律</strong>：工业级 <code>RMSNorm.forward</code> 必须先 <code>x.float()</code> 升 FP32 算平方均值与 <code>torch.rsqrt</code>，最后再 <code>.type_as(x)</code> 转回 BF16/FP16。</li>
+        </ul>
+      </div>
+
+      <div class="callout interview">
+        <span class="ct">30 秒面试表达模板</span>
+        <p>「现代开源大模型相比 2017 原版 Transformer，在归一化与残差上有两项标配升级：第一是把 Post-LN 改为 <strong>Pre-Norm</strong>，让残差主干变成不经过任何缩放的纯恒等加法通路，反向梯度可以借单位阵 $\mathbf{I}$ 无损回传到浅层，大幅降低对长 Warmup 的依赖；第二是把 LayerNorm 换成 <strong>RMSNorm</strong>，省掉均值中心化和偏置 $\beta$，因为归一化是典型的显存带宽受限算子，少算一趟均值能省掉一次全局归约读写、提速约 10%–30%。工程实现上要注意混合精度训练时必须先 <code>.float()</code> 转 FP32 算平方均值与 <code>rsqrt</code>，防止异常大激活在 FP16 下平方溢出成 <code>NaN</code>，算完再 <code>.type_as(x)</code> 转回半精度。」</p>
+      </div>
+    </section>
+
+    <!-- ========== §7 可选自测与面试三层追问 ========== -->
+    <section>
+      <h2><span class="num">07</span>想检验一下？（可选 · 点击展开）</h2>
+
+      <details class="reveal q">
+        <summary>1. 快速口算：把本课向量 $x = [2, -1, 3, 0]$ 整体放大 $3$ 倍变成 $3x = [6, -3, 9, 0]$（忽略极小项 $\epsilon$），RMSNorm 的输出会变大 $3$ 倍还是保持不变？</summary>
+        <div>
+          <p><strong>保持完全不变（严格正向缩放不变性）！</strong>因为对任意正常数 $\lambda &gt; 0$，$\text{RMS}(\lambda x) = \sqrt{\frac{1}{d}\sum (\lambda x_i)^2} = \lambda\,\text{RMS}(x)$，分子分母的 $\lambda$ 精确约掉：$\frac{\lambda x}{\lambda\,\text{RMS}(x)} = \frac{x}{\text{RMS}(x)}$。若乘负数 $-\lambda$，则输出刚好反号。</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>2. 🎤 面试深挖（二/三层）：Pre-Norm 既然这么稳，它有什么隐藏副作用？为什么超大模型（如 Gemma-2、Qwen3、ViT-22B）又开始引入 QK-Norm 或 Sandwich-Norm？</summary>
+        <div>
+          <p><strong>第一层（副作用：主干方差膨胀与深层表示退化 Representation Collapse）</strong>：因为 Pre-Norm 主干没有任何归一化，每叠一层都会往上加一个子层增量，导致第 $l$ 层主干方差随深度线性累积 $\text{Var}(x_l) \approx 1 + l\sigma^2$。到了第 60 层以后，主干模长已经很大，当前层经归一化后算出的单位量级增量 $F_l(\text{Norm}(x_l))$ 相对庞大的 $x_l$ 只像挠痒痒——深层网络趋向恒等映射「偷懒」，有效深度利用率不如训稳后的 Post-Norm。</p>
+          <p><strong>第二层（注意力 Logit 尖峰崩塌）</strong>：百亿/千亿模型在大峰值学习率下，个别通道会出现极大值导致 $QK^\top/\sqrt{d_k}$ 点积爆炸，Softmax 退化成 One-Hot，注意力熵瞬间归零、梯度断流。</p>
+          <p><strong>第三层（现代前沿补丁方案）</strong>：① <strong>QK-Norm</strong>（ViT-22B / Qwen3 / Chameleon）：在进入 RoPE 与点积前，对每个头的 $Q$ 和 $K$ 单独做一次 RMSNorm，从数学上给点积加上硬上界，彻底根治注意力爆炸；② <strong>Sandwich-Norm / Peri-LN</strong>（Gemma-2）：除了子层入口有 Pre-Norm，在子层输出汇入残差主干前<strong>再夹一层 RMSNorm</strong>，既保留主干恒等直通，又锁死了每层增量的方差上限；③ <strong>残差缩放初始化</strong>（GPT-2 / MiniMind）：把每层出口投影矩阵 $W_o, W_{\text{down}}$ 的初始标准差乘上 $\frac{1}{\sqrt{2L}}$，使 $L$ 层累加后的初始总方差依然受控为 $\mathcal{O}(1)$。</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>3. 🎤 面试追问：一座 32 层（<code>num_hidden_layers=32</code>）的标准 LLaMA / MiniMind 模型，全身上下一共包含多少个独立的 <code>RMSNorm</code> 层？参数量总共多少？</summary>
+        <div>
+          <p>一共 <strong>$2 \times 32 + 1 = \mathbf{65}$ 个</strong> <code>RMSNorm</code> 层！每个 Transformer Block 内有 2 个（<code>attn_norm</code> 与 <code>ffn_norm</code>），外加所有 Block 走完后、进 <code>lm_head</code> 之前的 1 个顶层 <code>final_norm</code>。以 $d = 4096$ 为例，总参数量仅 $65 \times 4096 = 266{,}240 \approx 0.27\text{M}$（不到 7B 总参数的万分之零点四，四两拨千斤！）。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §8 延伸阅读 ========== -->
+    <section>
+      <h2><span class="num">08</span>延伸阅读与对照源码</h2>
+      <div class="callout source">
+        <span class="ct">首选一手资料</span>
+        <p>1. 本机参考库交互笔记：<code>04-LLM大模型/教学/05-层归一化LayerNorm.ipynb</code>（含 LayerNorm / RMSNorm 三路径反向传播手搓与分布直方图）及 <code>09-MiniMind整体架构.ipynb</code>（Cell#8–9、Cell#18–19）。<br>
+        2. 奠基论文：Biao Zhang &amp; Rico Sennrich, <em>Root Mean Square Layer Normalization</em> (NeurIPS 2019，仅 7 页，重点看 §3 缩放不变性分析与表 1 耗时对比)；Ruibin Xiong et al., <em>On Layer Normalization in the Transformer Architecture</em> (ICML 2020，从理论上证明为什么 Post-LN 必须 Warmup 而 Pre-LN 不需要)。</p>
+      </div>
+    </section>
+
+    <!-- LAB:NAV -->
+    <nav class="lab-nav"><a class="prev" href="0003-rope-rotary-position-embedding.html"><small>← 上一课</small>旋转位置编码（RoPE）：复数平面旋转与相对位置内积不变性</a><a class="next" href="0005-swiglu-and-gqa-kv-cache.html"><small>下一课 →</small>现代 LLM 标准积木：SwiGLU 门控前馈网络与 GQA 分组查询省显存账本</a></nav>
+    <!-- /LAB:NAV -->
+
+    <div class="ask-ai">💬 哪里想再掰开揉碎聊？直接说：<code>继续</code>（进入第 5 课：SwiGLU 与 GQA 省显存账本）· <code>详细推导</code> · <code>讲解代码</code> · <code>可视化</code> · <code>整理笔记</code></div>
+    <footer class="lab-footer">生成于 2026-11-01 · lab-teach · 数值来自 Python 金标准（verify_0004.py + PyTorch nn.LayerNorm/RMSNorm 双重校验）</footer>
+  </main>
+
+  <aside class="lab-margin"></aside>
+</div>
+
+<!-- LAB:GOLDEN -->
+<script type="application/json" id="lab-golden">{"explode_32": 431439.8833, "vanish_32": 1.10443e-05, "ln_mu": 1.0, "ln_var": 2.5, "ln_std": 1.58114199, "ln_out": [0.63245427, -1.26490853, 1.26490853, -0.63245427], "rms_ms": 3.5, "rms_val": 1.87083137, "rms_out": [1.06904344, -0.53452172, 1.60356516, 0.0], "dx_ln": [0.29409164, -0.35101293, -0.31306405, 0.36998534], "dx_rms": [0.29780563, -0.14890282, -0.24816978, 0.42761738], "rms_shift_out0": 1.128152, "grad_plain_l0": 1.10443e-05, "grad_post_l0": 0.0016944147, "grad_pre_l0": 4.08411557, "_meta": {"script": "学习/w03-Transformer与现代LLM架构/verify_0004.py", "python": "test", "generated": "2026-11-03"}}</script>
+<!-- /LAB:GOLDEN -->
+
+<script src="../../../.agents/skills/lab-teach/assets/lab.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-math.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-plot.js"></script>
+<script>
+Lab.ready(() => {
+  // ---------- 1. JS 端独立复现 §1, §3, §5 核心算例并与 Python 金标准逐项对齐 ----------
+  const eps = 1e-5;
+  const x4 = [2.0, -1.0, 3.0, 0.0];
+  const dout4 = [1.0, -0.5, 0.2, 0.8];
+
+  function calcLayerNorm(vec, ep = 1e-5) {
+    const d = vec.length;
+    const mu = vec.reduce((s, v) => s + v, 0) / d;
+    const centered = vec.map((v) => v - mu);
+    const vr = centered.reduce((s, v) => s + v * v, 0) / d;
+    const std = Math.sqrt(vr + ep);
+    const out = centered.map((v) => v / std);
+    return { mu, vr, std, out };
+  }
+
+  function calcRMSNorm(vec, ep = 1e-5) {
+    const d = vec.length;
+    const ms = vec.reduce((s, v) => s + v * v, 0) / d;
+    const rms = Math.sqrt(ms + ep);
+    const out = vec.map((v) => v / rms);
+    return { ms, rms, out };
+  }
+
+  function calcGradCurves(L, alpha) {
+    const layers = [];
+    const plain = [], post = [], pre = [];
+    for (let l = 0; l <= L; l++) layers.push(l);
+    // 从顶层 l = L (grad = 1) 往底层 l = 0 回传
+    const plainArr = new Array(L + 1).fill(1.0);
+    const postArr = new Array(L + 1).fill(1.0);
+    const preSqArr = new Array(L + 1).fill(1.0);
+    const postFactor = 1.0 / Math.sqrt(1.0 + alpha * alpha);
+    for (let l = L - 1; l >= 0; l--) {
+      plainArr[l] = plainArr[l + 1] * alpha;
+      postArr[l] = postArr[l + 1] * postFactor;
+      preSqArr[l] = preSqArr[l + 1] * (1.0 + (alpha * alpha) / (1.0 + l * alpha * alpha));
+    }
+    for (let l = 0; l <= L; l++) {
+      plain.push(plainArr[l]);
+      post.push(postArr[l]);
+      pre.push(Math.sqrt(preSqArr[l]));
+    }
+    return { layers, plain, post, pre };
+  }
+
+  const ln0 = calcLayerNorm(x4, eps);
+  const rms0 = calcRMSNorm(x4, eps);
+  const meanDout = dout4.reduce((s, v) => s + v, 0) / 4;
+  const meanDoutXhatLn = dout4.reduce((s, v, i) => s + v * ln0.out[i], 0) / 4;
+  const dxLn0 = dout4.map((v, i) => (v - meanDout - ln0.out[i] * meanDoutXhatLn) / ln0.std);
+  const meanDoutXhatRms = dout4.reduce((s, v, i) => s + v * rms0.out[i], 0) / 4;
+  const dxRms0 = dout4.map((v, i) => (v - rms0.out[i] * meanDoutXhatRms) / rms0.rms);
+  const rmsShift = calcRMSNorm(x4.map((v) => v + 5.0), eps);
+  const curvesDefault = calcGradCurves(32, 0.70);
+
+  Lab.check("explode_32", Math.pow(1.5, 32), undefined, { tol: 1e-6 });
+  Lab.check("vanish_32", Math.pow(0.7, 32), undefined, { tol: 1e-6 });
+  Lab.check("ln_mu", ln0.mu);
+  Lab.check("ln_var", ln0.vr);
+  Lab.check("ln_std", ln0.std, undefined, { tol: 1e-7 });
+  Lab.check("ln_out", ln0.out, undefined, { tol: 1e-7 });
+  Lab.check("rms_ms", rms0.ms);
+  Lab.check("rms_val", rms0.rms, undefined, { tol: 1e-7 });
+  Lab.check("rms_out", rms0.out, undefined, { tol: 1e-7, badge: "#sec-pg" });
+  Lab.check("dx_ln", dxLn0, undefined, { tol: 1e-7 });
+  Lab.check("dx_rms", dxRms0, undefined, { tol: 1e-7 });
+  Lab.check("rms_shift_out0", rmsShift.out[0], undefined, { tol: 1e-6 });
+  Lab.check("grad_plain_l0", curvesDefault.plain[0], undefined, { tol: 1e-6 });
+  Lab.check("grad_post_l0", curvesDefault.post[0], undefined, { tol: 1e-6 });
+  Lab.check("grad_pre_l0", curvesDefault.pre[0], undefined, { tol: 1e-6 });
+
+  // ---------- 2. §2 残差高速公路与 Pre-Norm vs Post-Norm 联动图 ----------
+  const gRes = LabPlot.graph("#graph-res", {
+    width: 680,
+    height: 225,
+    nodes: [
+      { id: "xl",   label: "x_l (输入)",     sub: "第 l 层主干",       x: 78,  y: 88,  w: 112, h: 48 },
+      { id: "norm", label: "RMSNorm",        sub: "支路入口归一化",    x: 238, y: 174, w: 118, h: 46 },
+      { id: "sub",  label: "F_l (Attn/FFN)", sub: "学习增量 Δx",      x: 416, y: 174, w: 136, h: 46 },
+      { id: "add",  label: "+ (残差加法门)", sub: "局部导数 = I",      x: 488, y: 88,  w: 132, h: 48 },
+      { id: "xl1",  label: "x_{l+1}",        sub: "直通下一层",        x: 626, y: 88,  w: 96,  h: 48 },
+    ],
+    edges: [
+      { id: "skip", from: "xl",   to: "add",  label: "恒等映射主干 (×I)" },
+      { id: "e1",   from: "xl",   to: "norm", label: "分流" },
+      { id: "e2",   from: "norm", to: "sub",  label: "RMS≈1" },
+      { id: "e3",   from: "sub",  to: "add",  label: "+F_l" },
+      { id: "out",  from: "add",  to: "xl1",  label: "" },
+    ],
+  });
+
+  const resStates = [
+    {
+      label: { norm: "支路入口", add: "x_l + F_l(x_l)" },
+      sub: { xl: "前向保留原值", sub: "只学增量 F_l", add: "逐层累加增量", xl1: "x_l + ΣF_i" },
+      highlight: ["xl", "sub", "add", "xl1"],
+      done: [],
+      edges: ["skip", "e3", "out"],
+      elabel: { skip: "前向恒等旁路 x_l", out: "→ x_L" },
+    },
+    {
+      label: { norm: "支路雅可比", add: "+ 梯度路由器" },
+      sub: { xl: "∂L/∂x_l 无损接收", sub: "∂F_l/∂x_l 可小", add: "∂(a+b)/∂a = I", xl1: "上游 ∂L/∂x_L" },
+      highlight: ["xl1", "add", "xl"],
+      done: ["sub"],
+      edges: ["skip", "out"],
+      elabel: { skip: "反向乘单位阵 I（零衰减！）", out: "← ∂L/∂x_L" },
+    },
+    {
+      label: { norm: "Pre: RMSNorm", add: "+ 纯加法主干" },
+      sub: { xl: "深层梯度平稳", norm: "移入匝道不挡主干", sub: "输入尺度恒定", xl1: "免漫长 Warmup" },
+      highlight: ["norm", "add", "xl"],
+      done: ["sub", "xl1"],
+      edges: ["skip", "e1", "e2", "e3"],
+      elabel: { skip: "Pre-Norm 主干 0 个归一化阻尼", e2: "稳定子层输入" },
+    },
+  ];
+
+  Lab.onStep("#step-res", (idx) => {
+    gRes.reset();
+    gRes.apply(resStates[idx] || resStates[0]);
+  });
+
+  // ---------- 3. §5 实验台一：深层反向梯度范数传播曲线 ----------
+  Lab.playground("#pg-grad", {
+    title: "实验台 1：32–64 层网络反向梯度范数传播（log₁₀ 尺度对比）",
+    params: [
+      { name: "L", label: "网络总层数 $L$", min: 4, max: 64, step: 4, value: 32, fmt: (v) => String(Math.round(v)) },
+      { name: "alpha", label: "单层支路雅可比缩放 $\\alpha$", min: 0.2, max: 1.5, step: 0.05, value: 0.70 },
+    ],
+    selects: [
+      {
+        name: "focus",
+        label: "重点观察架构",
+        options: [
+          ["prenorm", "现代 LLM：Pre-Norm (x + F(RMSNorm(x)))"],
+          ["postnorm", "2017 原版：Post-Norm (LN(x + F(x)))"],
+          ["plain", "无残差：Plain Net (F(x) 连乘)"],
+        ],
+        value: "prenorm",
+      },
+    ],
+    buttons: [
+      {
+        label: "重置默认 (L=32, α=0.70)",
+        primary: true,
+        onClick: (_p, ctl) => {
+          const sel = ctl.out.parentElement.querySelector("select");
+          if (sel) sel.value = "prenorm";
+          ctl.set("focus", "prenorm");
+          ctl.set("L", 32);
+          ctl.set("alpha", 0.70);
+        },
+      },
+      {
+        label: "梯度消失现场 (α=0.50, L=48)",
+        onClick: (_p, ctl) => {
+          const sel = ctl.out.parentElement.querySelector("select");
+          if (sel) sel.value = "plain";
+          ctl.set("focus", "plain");
+          ctl.set("L", 48);
+          ctl.set("alpha", 0.50);
+        },
+      },
+      {
+        label: "梯度爆炸现场 (α=1.15, L=64)",
+        onClick: (_p, ctl) => {
+          const sel = ctl.out.parentElement.querySelector("select");
+          if (sel) sel.value = "plain";
+          ctl.set("focus", "plain");
+          ctl.set("L", 64);
+          ctl.set("alpha", 1.15);
+        },
+      },
+    ],
+    caption: "横轴为层号 $l \\in [0, L]$（右侧 $l=L$ 为损失入口，梯度置 $1$，即 $\\log_{10}=0$；越往左代表回传到越浅的底层）。",
+    render(p, out) {
+      out.innerHTML = '<div class="chart-grad"></div>';
+      const L = Math.round(p.L);
+      const c = calcGradCurves(L, p.alpha);
+      const logPlain = c.plain.map((v) => Math.max(-18, Math.min(12, Math.log10(Math.max(v, 1e-30)))));
+      const logPost = c.post.map((v) => Math.max(-18, Math.min(12, Math.log10(Math.max(v, 1e-30)))));
+      const logPre = c.pre.map((v) => Math.max(-18, Math.min(12, Math.log10(Math.max(v, 1e-30)))));
+
+      const allY = logPlain.concat(logPost, logPre);
+      const yLo = Math.min(-4, Math.floor(Math.min(...allY) - 0.5));
+      const yHi = Math.max(1.5, Math.ceil(Math.max(...allY) + 0.5));
+
+      const focusMap = { prenorm: logPre, postnorm: logPost, plain: logPlain };
+      const focusColor = { prenorm: 1, postnorm: 2, plain: 4 }[p.focus] || 1;
+      const focusY0 = (focusMap[p.focus] || logPre)[0];
+
+      LabPlot.chart(out.querySelector(".chart-grad"), {
+        x: [0, L],
+        y: [yLo, yHi],
+        xLabel: "网络层号 l（从右侧顶层 L 往左侧底层 0 反向传播）",
+        yLabel: "log10(||∂L/∂x_l||)",
+        height: 290,
+      })
+        .hline(0, { color: 3, label: "无损基准 log10=0 (×1)" })
+        .line(c.layers, logPlain, { label: "Plain 无残差", color: 4, dash: p.focus !== "plain", width: p.focus === "plain" ? 3.0 : 1.9 })
+        .line(c.layers, logPost, { label: "Post-Norm 主干", color: 2, dash: p.focus !== "postnorm", width: p.focus === "postnorm" ? 3.0 : 2.1 })
+        .line(c.layers, logPre, { label: "Pre-Norm (现代 LLM)", color: 1, dash: p.focus !== "prenorm", width: p.focus === "prenorm" ? 3.2 : 2.2 })
+        .point(0, focusY0, { color: focusColor, label: `底层 l=0: 10^(${Lab.fmt(focusY0, 2)})` })
+        .draw();
+
+      Lab.readout(out, {
+        "Plain 底层梯度比 ($l=0$)": c.plain[0],
+        "Post-Norm 底层主干比 ($l=0$)": c.post[0],
+        "Pre-Norm 底层梯度比 ($l=0$)": c.pre[0],
+        "Post-Norm 单层阻尼 $\\frac{1}{\\sqrt{1+\\alpha^2}}$": 1.0 / Math.sqrt(1.0 + p.alpha * p.alpha),
+      }, 5);
+    },
+  });
+
+  // ---------- 4. §5 实验台二：4 维向量 LayerNorm vs RMSNorm 实时手算对比 ----------
+  Lab.playground("#pg-norm4d", {
+    title: "实验台 2：4 维特征向量 LayerNorm vs RMSNorm 逐分量对比（γ=1, β=0, ε=1e-5）",
+    params: [
+      { name: "x0", label: "分量 $x_0$", min: -6, max: 10, step: 0.5, value: 2.0 },
+      { name: "x1", label: "分量 $x_1$", min: -6, max: 10, step: 0.5, value: -1.0 },
+      { name: "x2", label: "分量 $x_2$", min: -6, max: 10, step: 0.5, value: 3.0 },
+      { name: "x3", label: "分量 $x_3$", min: -6, max: 10, step: 0.5, value: 0.0 },
+    ],
+    buttons: [
+      {
+        label: "重置为 §3 手算算例 [2, -1, 3, 0]",
+        primary: true,
+        onClick: (_p, ctl) => { ctl.set("x0", 2.0); ctl.set("x1", -1.0); ctl.set("x2", 3.0); ctl.set("x3", 0.0); },
+      },
+      {
+        label: "全体平移 +5.0（验证平移不变性）",
+        onClick: (_p, ctl) => { ctl.set("x0", 7.0); ctl.set("x1", 4.0); ctl.set("x2", 8.0); ctl.set("x3", 5.0); },
+      },
+      {
+        label: "全体放大 ×3（验证缩放不变性）",
+        onClick: (_p, ctl) => { ctl.set("x0", 6.0); ctl.set("x1", -3.0); ctl.set("x2", 9.0); ctl.set("x3", 0.0); },
+      },
+    ],
+    caption: "左侧 4 柱为 LayerNorm 输出（零均值中心化），右侧 4 柱（高亮色）为 RMSNorm 输出（保留原始零点与正负号比例）。",
+    render(p, out) {
+      out.innerHTML = '<div class="bars-norm"></div>';
+      const vec = [p.x0, p.x1, p.x2, p.x3];
+      const ln = calcLayerNorm(vec, eps);
+      const rm = calcRMSNorm(vec, eps);
+      const vals = ln.out.concat(rm.out);
+      const labels = ["LN₀", "LN₁", "LN₂", "LN₃", "RMS₀", "RMS₁", "RMS₂", "RMS₃"];
+
+      LabPlot.bars(out.querySelector(".bars-norm"), vals, {
+        labels,
+        decimals: 3,
+        highlight: [4, 5, 6, 7],
+        color: 1,
+        hlColor: 2,
+        height: 235,
+      });
+
+      const lnMeanOut = ln.out.reduce((s, v) => s + v, 0) / 4;
+      const rmsMeanOut = rm.out.reduce((s, v) => s + v, 0) / 4;
+      Lab.readout(out, {
+        "输入均值 $\\mu$ / 方差 $\\sigma^2$": `${Lab.fmt(ln.mu, 3)} / ${Lab.fmt(ln.vr, 3)}`,
+        "均方根 $\\text{RMS}(x)$": rm.rms,
+        "LayerNorm 输出 $\\hat{x}_{\\text{LN}}$": ln.out,
+        "RMSNorm 输出 $y_{\\text{RMS}}$": rm.out,
+        "LN 输出均值 vs RMS 输出均值": `${Lab.fmt(lnMeanOut, 4)} vs ${Lab.fmt(rmsMeanOut, 4)}`,
+      }, 4);
+    },
+  });
+});
+</script>
+</body>
+</html>

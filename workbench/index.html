@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>今日 · AI Lab</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/"><span class="brand-mark">L<span>·</span></span><span>AI LAB<small>个人学习工作台</small></span></a>
+    <nav aria-label="工作台导航">
+      <button data-view="today" class="active"><span>◷</span> 今日计划</button>
+      <button data-view="roadmap"><span>☷</span> 学习路线</button>
+      <button data-view="history"><span>▤</span> 打卡记录</button>
+    </nav>
+    <div class="sidebar-note"><span class="status-dot"></span> 本地 Markdown 工作区<p>每天推进一点，<br>留下明天能接上的线索。</p></div>
+    <a id="course-map" class="sidebar-link" target="_blank" rel="noopener">课程与速查表 ↗</a>
+  </aside>
+  <main id="app" aria-live="polite"><div class="loading">正在读取学习计划…</div></main>
+  <div id="toast" role="status"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

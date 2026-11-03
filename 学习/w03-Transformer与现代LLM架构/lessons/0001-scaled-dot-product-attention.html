@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>缩放点积自注意力（SDPA）：QKᵀ / √d_k 方差推导与软检索直觉 · w03-Transformer与现代LLM架构</title>
+<meta name="lab:topic" content="w03-Transformer与现代LLM架构">
+<meta name="lab:num" content="1">
+<meta name="lab:step" content="1">
+<meta name="lab:date" content="2026-11-01">
+<link rel="stylesheet" href="../../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body>
+<div class="lab-layout">
+  <nav id="lab-toc" aria-label="目录"></nav>
+
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../../index.html">📚 学习地图</a> / <a href="../../index.html#w03-Transformer与现代LLM架构">w03-Transformer与现代LLM架构</a> / 第 1 课</div>
+      <h1>缩放点积自注意力（SDPA）：$QK^\top / \sqrt{d_k}$ 方差推导与软检索直觉</h1>
+      <p class="subtitle">为什么一次矩阵乘就能打通任意距离的词关系？漏掉分母上的 $\sqrt{d_k}$ 为什么会让大模型彻底训不动？</p>
+      <div class="chips">
+        <span class="chip">⏱ 约 20 分钟</span>
+        <span class="chip">🧭 计划步骤 1 / 5</span>
+        <span class="chip">📅 2026-11-01</span>
+        <span class="chip">📓 04-LLM大模型/教学/01-自注意力.ipynb</span>
+      </div>
+    </header>
+
+    <div class="win">
+      <div class="icon">🎯</div>
+      <div>
+        <h4>本课收获</h4>
+        <p>用 $T=3,\ d_k=2$ 的极小数字算例亲手走通 $QK^\top \to \div\sqrt{d_k} \to \text{Softmax} \to AV$ 四步数值与张量 Shape 变化，并在白板上完整证出<strong>「点积方差 $\text{Var}(s)=d_k$ → Softmax 尖锐化 → 雅可比矩阵趋零导致梯度消失」</strong>的面试必考链条。</p>
+      </div>
+    </div>
+
+    <div class="prereq">
+      <b>前置依赖：</b>
+      <span class="known">✓ 矩阵乘法、Softmax 归一化与链式法则（已在 <code>w01</code> 自动微分与 MLP 章节掌握）</span> ·
+      <span class="gap">△ 独立随机变量的期望与方差性质（本课 §3 用两行初等代数当场补齐）</span>
+    </div>
+
+    <!-- ========== §1 痛点与直觉 ========== -->
+    <section>
+      <h2><span class="num">01</span>痛点与直觉：从串行传话筒到「软性可微哈希表」</h2>
+      <p>在 Transformer 诞生前，处理文本序列的主力是 RNN / LSTM：它必须像击鼓传花一样按时间步 $t=1, 2, \dots, T$ 串行递推隐藏态 $h_t = f(h_{t-1}, x_t)$。这带来了两个致命伤：<strong>第一，时间步强依赖导致 GPU 成千上万个流处理器无法沿序列维并行；第二，第 1 个词的信息要传到第 1000 个词，中间被固定维度的瓶颈向量反复挤压，早期细节严重遗忘。</strong></p>
+
+      <aside class="sidenote">
+        <b>硬哈希表 vs 软哈希表</b>：Python 字典 <code>d[q]</code> 只在 <code>q == k</code> 时返回 <code>1.0 * v</code>，其余全为 <code>0</code>（阶跃操作，处处导数为 0，无法梯度下降）。Self-Attention 把相等判断换成连续内积 $q \cdot k$，把独热选择换成 $\text{Softmax}$，让「查表」变成全程可微的平滑运算！
+      </aside>
+
+      <p>自注意力（Self-Attention）直接掀掉了串行递推的桌子：它把整句话变成一张<strong>软性可微哈希表（Soft Dictionary）</strong>，一步矩阵乘就让任意两个词实现路径长度 $O(1)$ 的面对面直连！</p>
+
+      <div class="callout intuition">
+        <span class="ct">每个词同时发出三张名片：Query · Key · Value</span>
+        <p>想象句子 <code>["猫", "追", "鱼"]</code> 走进相亲大厅，每个词各自通过线性变换生成三种向量：<br>
+        • <strong>Query（$Q$，寻人启事）</strong>：「我当前需要寻找什么语法/语义特征？」（比如动词「追」急需找谁发出了动作、追的对象是谁）；<br>
+        • <strong>Key（$K$，个人标签）</strong>：「我身上贴着什么属性标签，供别人检索匹配？」；<br>
+        • <strong>Value（$V$，干货包裹）</strong>：「一旦别人选中了我，我实际把什么语义内容交出去？」<br>
+        拿第 $i$ 个词的 $q_i$ 和全场所有词的 $k_j$ 算点积打分 → Softmax 转成和为 $1$ 的关注比例 → 按比例把大家的 $v_j$ 加权打包带走，上下文融合一步到位！</p>
+      </div>
+    </section>
+
+    <!-- ========== §2 具体数字手算 + Shape 表 ========== -->
+    <section>
+      <h2><span class="num">02</span>极小算例手算：$T=3,\ d_k=2$ 四步全追踪</h2>
+      <p>取 3 个词 <code>["猫", "追", "鱼"]</code>（序列长 $T=3$，特征维 $d_k=2$）。为了让你心算就能核对第 1 步，我们给定一位小数玩具矩阵（其中 $V$ 的第 0 列代表「施事者/主语特征」，第 1 列代表「受事者/宾语特征」）：</p>
+      <p>$$Q = \begin{pmatrix} 1.0 & 0.0 \\ 0.5 & 1.0 \\ 0.0 & 1.0 \end{pmatrix}, \qquad K = \begin{pmatrix} 1.0 & 0.2 \\ 0.2 & 0.8 \\ 0.4 & 1.0 \end{pmatrix}, \qquad V = \begin{pmatrix} 1.0 & 0.0 \\ 0.4 & 0.6 \\ 0.0 & 1.0 \end{pmatrix}$$</p>
+
+      <p>点击下方「下一步」按钮，对照右侧实时热力图，亲眼看清矩阵里的每一个数字是怎么算出来的：</p>
+
+      <div class="lab-figure">
+        <div id="fig-sdpa-steps" style="display:flex;justify-content:center;"></div>
+        <figcaption id="fig-sdpa-cap">步骤 1 / 4：原始点积相似度矩阵 $S_{\text{raw}} = QK^\top \in \mathbb{R}^{3\times 3}$（行 = Query 提问词，列 = Key 被检索词）</figcaption>
+      </div>
+
+      <div class="lab-stepper" id="step-sdpa" data-title="SDPA 前向四步手算追踪（猫 · 追 · 鱼）">
+        <div class="step" data-title="原始点积打分 S_raw = Q Kᵀ">
+          <p>用每行 $q_i$ 点乘每行 $k_j$（以第 1 行动词「追」$q_1 = [0.5, 1.0]$ 为例）：</p>
+          <p>$$s_{1,0}^{\text{raw}} = 0.5\times 1.0 + 1.0\times 0.2 = 0.7, \quad s_{1,1}^{\text{raw}} = 0.5\times 0.2 + 1.0\times 0.8 = 0.9, \quad s_{1,2}^{\text{raw}} = 0.5\times 0.4 + 1.0\times 1.0 = \mathbf{1.2}$$</p>
+          <p>$$S_{\text{raw}} = QK^\top = \begin{pmatrix} 1.0 & 0.2 & 0.4 \\ 0.7 & 0.9 & 1.2 \\ 0.2 & 0.8 & 1.0 \end{pmatrix}$$</p>
+        </div>
+        <div class="step" data-title="除以 √d_k 缩放：S = S_raw / √2">
+          <p>当前头维度 $d_k = 2$，除以 $\sqrt{2} \approx 1.41421356$ 把点积拉回单位标准差区间：</p>
+          <p>$$S = \frac{QK^\top}{\sqrt{2}} \approx \begin{pmatrix} 0.7071 & 0.1414 & 0.2828 \\ 0.4950 & 0.6364 & \mathbf{0.8485} \\ 0.1414 & 0.5657 & 0.7071 \end{pmatrix}$$</p>
+        </div>
+        <div class="step" data-title="沿 Key 方向按行 Softmax 得注意力权重 A">
+          <p>对每一行独立做归一化 $a_{i,j} = \frac{\exp(s_{i,j})}{\sum_{l=0}^{2} \exp(s_{i,l})}$，<strong>每行概率和严格等于 $1.0$</strong>（看第 1 行「追」）：</p>
+          <p>$$e^{0.4950}\approx 1.6405,\quad e^{0.6364}\approx 1.8897,\quad e^{0.8485}\approx 2.3362 \implies \text{行和} = 5.8663$$</p>
+          <p>$$A = \text{Softmax}_{\text{row}}(S) \approx \begin{pmatrix} 0.4500 & 0.2556 & 0.2944 \\ 0.2796 & 0.3221 & \mathbf{0.3982} \\ 0.2331 & 0.3564 & 0.4105 \end{pmatrix}$$</p>
+          <p class="small muted">语义浮现：动词「追」把最大权重 $39.82\%$ 分给宾语「鱼」，$32.21\%$ 留给自己，$27.96\%$ 分给主语「猫」。</p>
+        </div>
+        <div class="step" data-title="对 Value 加权求和：O = A V">
+          <p>用权重矩阵 $A \in \mathbb{R}^{3\times 3}$ 左乘 $V \in \mathbb{R}^{3\times 2}$，每个词的输出行都是全场 Value 行向量的凸组合（看「追」的输出 $o_1$）：</p>
+          <p>$$o_1 = 0.2796\times [1.0, 0.0] + 0.3221\times [0.4, 0.6] + 0.3982\times [0.0, 1.0] = [\mathbf{0.4085},\ \mathbf{0.5915}]$$</p>
+          <p>$$O = AV \approx \begin{pmatrix} 0.5522 & 0.4478 \\ \mathbf{0.4085} & \mathbf{0.5915} \\ 0.3757 & 0.6243 \end{pmatrix}$$</p>
+          <p class="small muted">原本孤立的词向量，一步矩阵乘后同时融合了约 $40.8\%$ 的施事者特征与 $59.2\%$ 的受事者特征！</p>
+        </div>
+      </div>
+
+      <h3>工业批量张量 Shape 全链路追踪表</h3>
+      <p>在真实 PyTorch 训练中，最前面会多出批次维 $B$（Batch Size）。记住一条准则：<strong>注意力权重矩阵永远是 `(..., T, T)`，且最后输出与输入的形状严丝合缝一致</strong>：</p>
+      <table class="shape">
+        <tr><th>步骤 / 代码表达式</th><th>Shape</th><th>物理含义与防坑要点</th></tr>
+        <tr><td>输入 <code>Q, K, V</code></td><td>(B, T, d_k)</td><td>批次 $B$，序列 token 数 $T$，单头特征维 $d_k$</td></tr>
+        <tr><td>转置键矩阵 <code>K.transpose(-2, -1)</code></td><td>(B, d_k, T)</td><td>只交换<strong>最后两维</strong>！绝不能写 <code>K.T</code>（会把批次维 $B$ 颠倒报错）</td></tr>
+        <tr><td>缩放打分 <code>scores = Q @ Kᵀ / √d_k</code></td><td>(B, T, T)</td><td><code>scores[b, i, j]</code>：第 $i$ 个词对第 $j$ 个词的匹配分</td></tr>
+        <tr><td>行归一化 <code>attn = softmax(scores, dim=-1)</code></td><td>(B, T, T)</td><td><strong>必须是 <code>dim=-1</code></strong>（沿列索引 $j$ 即 Key 方向求和为 1）</td></tr>
+        <tr><td>聚合输出 <code>out = attn @ V</code></td><td>(B, T, d_k)</td><td><code>(B, T, T) @ (B, T, d_k) → (B, T, d_k)</code>，恢复原特征维</td></tr>
+      </table>
+    </section>
+
+    <!-- ========== §3 公式推导：为什么要除以 √d_k ========== -->
+    <section>
+      <h2><span class="num">03</span>面试必推公式：为什么要除以 $\sqrt{d_k}$？</h2>
+      <p>「自注意力为什么要除以 $\sqrt{d_k}$，不除或者改成除以 $d_k$ 会怎样？」——这是大模型实习面试出现率<strong>前 3 名</strong>的必考白板题。下面分 4 步把概率统计与梯度反传一次推穿：</p>
+
+      <div class="lab-stepper" id="deriv-sqrt-dk" data-title="√d_k 方差膨胀与 Softmax 雅可比梯度消失严格证明" data-mode="accumulate">
+        <div class="step" data-title="单分量乘积的均值与方差">
+          <p>假设经过初始化或归一化层后，查询向量 $q \in \mathbb{R}^{d_k}$ 与键向量 $k \in \mathbb{R}^{d_k}$ 的各个分量相互独立同分布，满足零均值、单位方差：$\mathbb{E}[q_i] = \mathbb{E}[k_i] = 0$，$\text{Var}(q_i) = \text{Var}(k_i) = 1$（从而 $\mathbb{E}[q_i^2] = \text{Var}(q_i) + (\mathbb{E}[q_i])^2 = 1$）。</p>
+          <p>考察第 $i$ 个维度的单项乘积 $u_i = q_i k_i$（利用独立性 $\mathbb{E}[XY] = \mathbb{E}[X]\mathbb{E}[Y]$）：</p>
+          <p>$$\mathbb{E}[q_i k_i] = \mathbb{E}[q_i]\mathbb{E}[k_i] = 0 \times 0 = 0$$</p>
+          <p>$$\text{Var}(q_i k_i) = \mathbb{E}[q_i^2 k_i^2] - \bigl(\mathbb{E}[q_i k_i]\bigr)^2 = \mathbb{E}[q_i^2]\mathbb{E}[k_i^2] - 0 = 1 \times 1 = 1$$</p>
+        </div>
+        <div class="step" data-title="d_k 项求和后，方差线性膨胀为 d_k！">
+          <p>原始点积 $s = q \cdot k = \sum_{i=1}^{d_k} q_i k_i$ 是 $d_k$ 个独立同分布随机变量之和。利用独立变量和的方差可加性：</p>
+          <p>$$\mathbb{E}[s] = \sum_{i=1}^{d_k} 0 = 0, \qquad \text{Var}(s) = \sum_{i=1}^{d_k} \text{Var}(q_i k_i) = d_k \implies \sigma_s = \sqrt{d_k}$$</p>
+          <p>这意味着什么？现代大模型单头维度通常是 $d_k = 64$（如 GPT-2）或 $d_k = 128$（如 LLaMA-3 / Qwen2.5），此时标准差 $\sigma_s$ 高达 $8 \sim 11.3$，<strong>点积分数会轻易飙到 $\pm 20$ 甚至 $\pm 30$！</strong></p>
+        </div>
+        <div class="step" data-title="不缩放进 Softmax → 尖锐 One-hot → 雅可比矩阵全员归零">
+          <p>当输入分数拉出十几的差距（例如 $[20, -5, 2]$），指数函数 $\exp(\cdot)$ 会极度放大差距：$e^{20} \gg e^2$，导致 Softmax 输出退化为尖锐的独热向量 $a \to [1, 0, \dots, 0]$。</p>
+          <p>更致命的是反向传播！对单行 $a = \text{Softmax}(s)$，第 $j$ 个输出对第 $i$ 个分数的偏导（雅可比矩阵元素）为：</p>
+          <p>$$J_{ji} = \frac{\partial a_j}{\partial s_i} = a_j (\delta_{ij} - a_i) = \begin{cases} a_i (1 - a_i), & i = j \\ -a_i a_j, & i \neq j \end{cases}$$</p>
+          <p>一旦 $a \to [1, 0, \dots, 0]$：对角线项 $1\times(1-1)=0$ 或 $0\times(1-0)=0$，非对角线项 $-1\times 0 = 0$——<strong>整张雅可比矩阵 $J$ 的每一个元素全部趋近 $0$！上游传来的误差在这里被彻底截断，$W_Q, W_K$ 的梯度直接消失，模型根本学不动！</strong></p>
+        </div>
+        <div class="step" data-title="除以 √d_k 精准复位为单位方差">
+          <p>根据方差缩放性质 $\text{Var}(c X) = c^2 \text{Var}(X)$，只需除以标准差 $\sqrt{d_k}$：</p>
+          <p>$$\text{Var}\!\left(\frac{s}{\sqrt{d_k}}\right) = \left(\frac{1}{\sqrt{d_k}}\right)^2 \cdot \text{Var}(s) = \frac{1}{d_k} \cdot d_k = \mathbf{1}$$</p>
+          <p>无论隐藏维度 $d_k$ 从 $2$ 扩到 $64$ 还是 $256$，进入 Softmax 前的分布始终稳稳落在 $[-2, +2]$ 的高斜率敏感区！（若误除以 $d_k$，方差会缩成 $1/d_k \to 0$，Softmax 变成均匀分布 $[1/T, \dots, 1/T]$，注意力失去聚焦能力。）</p>
+        </div>
+      </div>
+
+      <div class="eq-explain">
+        <span class="eq-tag">(SDPA 核心双式)</span>
+        <p>$$\text{Attention}(Q, K, V) = \text{Softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)V, \qquad \frac{\partial L}{\partial s_i} = a_i \!\left(\frac{\partial L}{\partial a_i} - \sum_{j=1}^{T} \frac{\partial L}{\partial a_j} a_j\right)$$</p>
+        <dl>
+          <dt>$Q, K \in \mathbb{R}^{B \times T \times d_k}$</dt><dd>查询与键张量；$QK^\top$ 形状为 $(B, T, T)$，复杂度 $O(B T^2 d_k)$</dd>
+          <dt>$1 / \sqrt{d_k}$</dt><dd>方差归一化系数，抵消 $d_k$ 维内积求和带来的标准差膨胀</dd>
+          <dt>$\partial L / \partial s_i$</dt><dd>Softmax 反向传播化简式（见下方代码第 48 行）：无需显式实例化 $T\times T$ 雅可比矩阵，$O(T)$ 即可算完单行梯度</dd>
+        </dl>
+      </div>
+
+      <details class="reveal deep">
+        <summary>选读：一步推通代码里的 Softmax 反向公式 $ds = a \odot (da - \sum da \cdot a)$</summary>
+        <div>
+          <p>设上游对注意力权重行的梯度为 $g_j = \frac{\partial L}{\partial a_j}$，由链式法则：</p>
+          <p>$$\frac{\partial L}{\partial s_i} = \sum_{j=1}^{T} g_j \frac{\partial a_j}{\partial s_i} = \sum_{j=1}^{T} g_j a_j (\delta_{ij} - a_i) = g_i a_i - a_i \sum_{j=1}^{T} g_j a_j = a_i \Bigl(g_i - \sum_{j=1}^{T} g_j a_j\Bigr)$$</p>
+          <p>直观含义非常漂亮：如果某个位置的梯度 $g_i$ 高于全行按概率加权的平均梯度 $\bar{g} = \sum_j g_j a_j$，它的分数 $s_i$ 就获得正梯度上调；反之则下调。当 $a_1 \to 1$ 饱和时，$g_1 - g_1 \cdot 1 \to 0$，其余项 $a_i \to 0$，整行梯度瞬间熄火！</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §4 代码讲解 ========== -->
+    <section>
+      <h2><span class="num">04</span>代码讲解：手搓 NumPy 前反向 vs PyTorch 工业级内核</h2>
+      <p>左侧直接提取自 AI Tutorial <code>01-自注意力.ipynb · Cell#8</code> 的真实源码，完整覆盖了数值稳定版 Softmax、前向 4 步与手推反向传播。点击右侧步骤卡片逐段对齐：</p>
+
+      <div class="code-walk" data-dim>
+<pre data-file="../04-LLM大模型/教学/01-自注意力.ipynb · Cell#8" data-start="1"><code class="language-python">def softmax_rows(x):
+    """对最后一维（key 方向）做数值稳定的 softmax，每行独立归一化。"""
+    # 第 1 步：减去每行的最大值（keepdims 保持 [B,T,1] 可广播），防止 exp 上溢出
+    x = x - np.max(x, axis=-1, keepdims=True)
+    # 第 2 步：对平移后的分数取指数（输入 ≤ 0，结果 ∈ (0,1]，绝对安全）
+    ex = np.exp(x)
+    # 第 3 步：除以每行指数之和（keepdims 保持可广播），每行权重和为 1
+    return ex / np.sum(ex, axis=-1, keepdims=True)
+
+
+def attention_forward(Q, K, V, mask=None):
+    """缩放点积注意力前向：softmax(QKᵀ/√d_k)V，可选因果掩码。
+
+    Q/K/V : [B, T, d_k] 单头张量，每个 batch 样本独立计算
+    mask  : [T,T] 或 [B,T,T] 布尔矩阵；True 位置在 softmax 前被填成 -inf
+    返回  : (out, cache)；out=[B,T,d_k]，cache 缓存中间量供 backward 复用
+    """
+    dk = Q.shape[-1]                                  # 特征维度 d_k，用作缩放因子
+    # 前向第 1 步：相似度分数 scores[b,i,j] = Q[b,i,:]·K[b,j,:] / √d_k
+    # （内积度量「第 i 个 query 与第 j 个 key 的相似度」，每个 batch 样本独立）
+    scores = np.matmul(Q, K.swapaxes(-1, -2)) / math.sqrt(dk)
+    # 前向第 2 步：因果掩码——把上三角（未来位置）填成 -inf
+    # （exp(-inf)=0，softmax 后这些位置权重为 0，模型"看不到"未来）
+    if mask is not None:
+        scores = np.where(mask, -np.inf, scores)
+    # 前向第 3 步：对 scores 的最后一维（key 方向）做 softmax，得到注意力权重
+    # attn[b,i,j] = 第 i 个 query 分给第 j 个 key 的权重，每行和为 1
+    attn = softmax_rows(scores)
+    # 前向第 4 步：加权求和 out[b,i,:] = Σ_j attn[b,i,j]·V[b,j,:]
+    out = np.matmul(attn, V)
+    cache = (Q, K, V, scores, attn)                   # 缓存前向中间量，backward 直接复用
+    return out, cache
+
+
+def attention_backward(dout, cache):
+    """手搓反向传播：链式法则沿 out→attn→scores→(Q,K,V) 逐级回传梯度。
+
+    dout: [B,T,d_k] 上层回传的梯度；返回 (dQ, dK, dV)。
+    """
+    Q, K, V, scores, attn = cache                     # 取出前向缓存的中间量
+    dk = Q.shape[-1]                                  # 缩放因子（求梯度时同样要除）
+    # 反传第 1 步：out = attn@V 对 attn 求梯度（矩阵乘法求导的"转置规则"）
+    # dattn = dout @ Vᵀ ：[B,T,T] = [B,T,d_k] @ [B,d_k,T]
+    dattn = np.matmul(dout, V.swapaxes(-1, -2))
+    # 反传第 2 步：softmax 雅可比（对每一行独立，推导见 markdown）
+    # 行向量 a=softmax(s) 的雅可比 ∂a_i/∂s_j = a_i(δ_ij − a_j)，链式求和得
+    # dscore_i = a_i·(dattn_i − Σ_j dattn_j·a_j) —— 行内梯度先加权求和再"自我扣除"
+    dscore = attn * (dattn - np.sum(dattn * attn, axis=-1, keepdims=True))
+    # 反传第 3 步：scores = QKᵀ/√d_k 对 Q、K 求梯度（同样用转置规则，别忘了 √d_k）
+    # dQ[i,:] = (1/√d_k)·Σ_j dscore[i,j]·K[j,:]  →  dQ = dscore @ K / √d_k
+    dQ = np.matmul(dscore, K) / math.sqrt(dk)
+    # dK[j,:] = (1/√d_k)·Σ_i dscore[i,j]·Q[i,:]  →  dK = dscoreᵀ @ Q / √d_k
+    dK = np.matmul(dscore.swapaxes(-1, -2), Q) / math.sqrt(dk)
+    # 反传第 4 步：out = attn@V 对 V 求梯度  →  dV = attnᵀ @ dout
+    dV = np.matmul(attn.swapaxes(-1, -2), dout)
+    return dQ, dK, dV</code></pre>
+        <ol class="walk">
+          <li data-lines="1-8"><strong>防溢出 Softmax</strong>：减去行最大值 $\max_j s_{ij}$ 利用平移不变性 $\frac{e^{s-m}}{\sum e^{s-m}} = \frac{e^s}{\sum e^s}$，保证 $\exp$ 输入恒 $\le 0$，绝不出现 <code>exp(100) = inf</code> 导致 <code>inf/inf = NaN</code>。</li>
+          <li data-lines="18-21"><strong>批量转置与 $\sqrt{d_k}$ 缩放</strong>：<code>K.swapaxes(-1, -2)</code> 只翻转最后两维得 <code>(B, d_k, T)</code>，一步算出全部样本的 $QK^\top / \sqrt{d_k}$。</li>
+          <li data-lines="28-32"><strong>归一化与缓存</strong>：<code>attn @ V</code> 聚合特征，并把 <code>(Q, K, V, scores, attn)</code> 存入 <code>cache</code>——注意 <code>attn</code> 占 $O(B T^2)$ 空间，正是朴素 Attention 长序列爆显存的元凶！</li>
+          <li data-lines="44-48"><strong>Softmax 雅可比回传</strong>：第 48 行把 §3 推导的 $a \odot (da - \sum da\cdot a)$ 写成纯逐元素广播运算，<code>keepdims=True</code> 维持 <code>[B, T, 1]</code> 对齐。</li>
+          <li data-lines="51-55"><strong>矩阵乘转置求导与 $1/\sqrt{d_k}$</strong>：回传 <code>dQ, dK</code> 时千万别漏掉前向除过的 <code>math.sqrt(dk)</code>；而 <code>V</code> 在 Softmax 外侧，<code>dV = attnᵀ @ dout</code> 不受 Softmax 饱和影响（这解释了为何不缩放时 $W_V$ 还能动但 $W_Q, W_K$ 彻底卡死！）。</li>
+        </ol>
+      </div>
+
+      <h3>工程实战对照：手写 PyTorch vs <code>F.scaled_dot_product_attention</code></h3>
+      <div class="lab-tabs">
+        <div class="tab" data-label="PyTorch 手写对照 vs 官方融合算子">
+<pre data-file="../03-深度学习/模型笔记/11-Attention与Transformer从零实现.ipynb · Cell#8" data-start="6"><code class="language-python">def sdp_manual(q, k, v):
+    # q,k,v: (B, H, T, dh)
+    scores = q @ k.transpose(-2, -1) / (k.shape[-1] ** 0.5)
+    w = torch.softmax(scores, dim=-1)
+    return w @ v
+
+B, H, T, dh = 2, 4, 9, 16
+q = torch.randn(B, H, T, dh); k = torch.randn(B, H, T, dh); v = torch.randn(B, H, T, dh)
+ref = F.scaled_dot_product_attention(q, k, v)
+mine = sdp_manual(q, k, v)</code></pre>
+        </div>
+        <div class="tab" data-label="🚀 RTX 4080 硬件提示：FlashAttention-2 自动路由">
+          <div class="callout code">
+            <span class="ct">为什么工业界训练一律调 <code>F.scaled_dot_product_attention</code>？</span>
+            <p>手写版第 8–9 行必须把完整的 <code>scores</code> 和 <code>w</code>（形状 <code>(B, H, T, T)</code>）写回显卡高带宽显存（HBM）：当 $T = 32768$ 时，仅单层单样本 16 个头的注意力矩阵就要占 $16 \times 32768^2 \times 2\text{B} = \mathbf{32\text{ GB}}$，瞬间 OOM！<br>
+            而在你的主力机（RTX 4080 Laptop, Ada SM89）开启 <code>bf16=True</code> 时，<code>F.scaled_dot_product_attention</code> 会自动路由到底层 <strong>FlashAttention-2 内核</strong>：在芯片高速 SRAM 内分块做 Online Softmax 边算边累加 $AV$，<strong>完全省去 $O(T^2)$ 注意力矩阵落盘 HBM，显存复杂度直降为 $O(T)$，速度还快 $2\sim 4$ 倍</strong>！（注意在 Colab Tesla T4 SM75 上不支持 BF16/FA2，会自动回退至 Memory-Efficient / Math SDPA 内核。）</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ========== §5 交互实验 ========== -->
+    <section>
+      <h2 id="sec-pg"><span class="num">05</span>交互实验：亲眼目睹不除 $\sqrt{d_k}$ 时的梯度断崖</h2>
+      <p>下面以 §2 的 <code>["猫", "追", "鱼"]</code> 算例为基准，按 §3 独立同分布规律模拟头维度 $d_k \in [2, 256]$ 增长时原始点积标准差 $\propto \sqrt{d_k}$ 的放大效应。切换<strong>「是否开启 $1/\sqrt{d_k}$ 缩放」</strong>并拖动 $d_k$ 滑块，对比左侧注意力热力图与右侧雅可比梯度范数 $\|J\|_F$：</p>
+
+      <div id="pg-sdpa"></div>
+
+      <p class="small muted">💡 <strong>两个必做观察</strong>：① 保持默认 <code>开启 1/√d_k 缩放</code>，把 $d_k$ 从 <code>2</code> 一路拉到 <code>256</code>——你会发现热力图与梯度范数 <strong>纹丝不动（恒为 0.4659）</strong>！② 点击按钮<strong>「关闭缩放 + 拉到 d_k = 256」</strong>，观察第 0 行权重瞬间变成 <code>[0.999, 0.000, 0.001]</code> 独热分布，行 0 雅可比范数 $\|J_0\|_F$ 从 <code>0.4621</code> 暴跌近 <strong>200 倍</strong> 至 <code>0.0023</code>！</p>
+    </section>
+
+    <!-- ========== §6 小结 ========== -->
+    <section>
+      <h2><span class="num">06</span>小结与面试表达模板</h2>
+      <div class="callout summary">
+        <span class="ct">本课核心四条</span>
+        <ul>
+          <li><strong>软性检索直觉</strong>：Query 提需求、Key 贴标签、Value 装内容，一步矩阵乘实现任意距离词间 $O(1)$ 路径直连与全序列 GPU 并行。</li>
+          <li><strong>前向四步与维度</strong>：<code>(B, T, d_k) @ (B, d_k, T) → (B, T, T)</code> 除以 $\sqrt{d_k}$，沿 <code>dim=-1</code> 做数值稳定 Softmax，再右乘 <code>V</code> 还原为 <code>(B, T, d_k)</code>。</li>
+          <li><strong>$\sqrt{d_k}$ 概率根源</strong>：零均值单位方差的 $d_k$ 维独立向量内积，期望为 $0$、方差为 $d_k$、标准差为 $\sqrt{d_k}$；除以 $\sqrt{d_k}$ 恰好把方差拉回 $1$。</li>
+          <li><strong>梯度消失链条</strong>：不缩放会导致点积差距随 $\sqrt{d_k}$ 膨胀 → Softmax 饱和为 One-hot → 雅可比 $a_j(\delta_{ij}-a_i) \to 0$ → $W_Q, W_K$ 梯度消失（而 $W_V$ 在 Softmax 外仍可传梯度）。</li>
+        </ul>
+      </div>
+
+      <div class="callout interview">
+        <span class="ct">30 秒面试高分回答模板</span>
+        <p>「缩放点积注意力除以 $\sqrt{d_k}$ 是为了抵消高维内积带来的方差膨胀、防止 Softmax 饱和梯度消失。具体来说，假设 $q, k$ 各分量独立且均值 0 方差 1，单分量乘积方差是 1，$d_k$ 项求和后点积方差变成 $d_k$、标准差是 $\sqrt{d_k}$。当 $d_k=64$ 或 $128$ 时，不缩放会让分数绝对值很大，Softmax 输出退化成接近 $[1,0,\dots,0]$ 的独热分布；此时 Softmax 的雅可比矩阵 $a_j(\delta_{ij}-a_i)$ 所有元素都趋近于 0，导致回传给 $Q$ 和 $K$ 的梯度消失。除以 $\sqrt{d_k}$ 能把分数方差重新归一化回 1，无论头维度多大都稳定在梯度充沛的敏感区。」</p>
+      </div>
+    </section>
+
+    <!-- ========== §7 折叠自测与面试三层追问 ========== -->
+    <section>
+      <h2><span class="num">07</span>想检验一下？（可选 · 点击展开）</h2>
+      <details class="reveal q">
+        <summary>1. 如果有人把缩放系数 $\frac{1}{\sqrt{d_k}}$ 错写成了 $\frac{1}{d_k}$，当 $d_k = 128$ 时模型前向和训练会出现什么退化？</summary>
+        <div>
+          <p>若除以 $d_k$，缩放后分数的方差会变成 $\text{Var}(s / d_k) = \frac{1}{d_k^2} \cdot d_k = \frac{1}{d_k} = \frac{1}{128} \approx 0.0078$（标准差仅 $0.088$）。所有点积分数都挤在 $0$ 附近极窄的区间内，经过 Softmax 后每一行都会退化成接近均匀分布 $[\frac{1}{T}, \frac{1}{T}, \dots, \frac{1}{T}]$——相当于把所有词无差别求平均（Mean Pooling），模型很难在初期建立锐利的语法聚焦能力。</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>2. 🎤 面试追问（第二层：替代方案对比）：注意力打分为什么选「点积注意力（Dot-Product）」而不用早期的「加性注意力（Bahdanau Additive Attention）」？</summary>
+        <div>
+          <p>加性注意力的打分公式是 $s_{ij} = v^\top \tanh(W_q q_i + W_k k_j)$。两者理论复杂度虽然同阶，但<strong>硬件效率天差地别</strong>：<br>
+          ① <strong>矩阵乘内核优势</strong>：点积注意力直接调用高度优化的批量矩阵乘（GEMM / Tensor Core <code>Q @ K.transpose(-2, -1)</code>），算术强度高、极吃 GPU 红利；而加性注意力需要把 $Q, K$ 广播成 <code>(B, T, T, d)</code> 四维大张量逐元素相加再过 $\tanh$，显存读写带宽开销巨大。<br>
+          ② <strong>高维表现差异</strong>：Vaswani 原论文指出，$d_k$ 较小时两者精度相近；$d_k$ 较大时加性注意力因自带 $\tanh$ 有界不易饱和而占优，但只要给点积补上 <strong>$1/\sqrt{d_k}$ 缩放因子</strong>，点积注意力就既消除了饱和缺陷，又保留了压倒性的矩阵乘速度优势。</p>
+        </div>
+      </details>
+
+      <details class="reveal q">
+        <summary>3. 🎤 面试追问（第三层：算力与显存账本）：单层自注意力的注意力核复杂度 $O(T^2 d)$ 与线性投影复杂度 $O(T d^2)$，分别在什么场景下成为瓶颈？</summary>
+        <div>
+          <p>设模型隐藏维为 $d$（例如 7B 模型 $d=4096$），序列长度为 $T$：<br>
+          • <strong>Q/K/V/O 四个线性投影层</strong>：FLOPs 约为 $8 B T d^2$，随序列长 $T$ <strong>线性增长</strong>；<br>
+          • <strong>SDPA 注意力核心（$QK^\top$ 与 $AV$）</strong>：FLOPs 约为 $4 B T^2 d$，随序列长 $T$ <strong>平方级增长</strong>。<br>
+          两者的分水岭在 $4 B T^2 d \approx 8 B T d^2 \iff \mathbf{T \approx 2d}$：<br>
+          1. <strong>短文本场景（$T \ll d$，如 $T=512,\ d=4096$）</strong>：$O(T d^2)$ 占算力绝对大头（约占 90%+），提升吞吐主要靠压榨 Linear 层（如 FP8/BF16 Tensor Core、量化）；<br>
+          2. <strong>长上下文场景（$T \gg d$，如 $T=32\text{K}\sim 128\text{K}$）</strong>：$O(T^2 d)$ 二次方爆炸彻底接管算力瓶颈，且朴素实现还有 $O(B H T^2)$ 中间注意力矩阵显存墙，必须上 <strong>FlashAttention 分块融合</strong>、Ring Attention 序列并行或稀疏/线性注意力机制。</p>
+        </div>
+      </details>
+    </section>
+
+    <!-- ========== §8 延伸阅读 ========== -->
+    <section>
+      <h2><span class="num">08</span>延伸阅读与对照源码</h2>
+      <div class="callout source">
+        <span class="ct">一手参考资料</span>
+        <p>1. <strong>上层课程 Notebook</strong>：<code>../04-LLM大模型/教学/01-自注意力.ipynb</code>（含 6 张前反向中间态热力图与梯度数值检验）及本课金标准验证脚本 <a href="../verify_0001.py"><code>verify_0001.py</code></a>。<br>
+        2. <strong>经典原论文</strong>：Vaswani et al., <em>Attention Is All You Need</em> (NeurIPS 2017) Section 3.2.1 &amp; Footnote 4（仅用 6 行脚注就讲清了今天 §3 的 $\sqrt{d_k}$ 方差证明，强烈建议花 3 分钟读原文这一段！）。</p>
+      </div>
+    </section>
+
+    <!-- LAB:NAV -->
+    <nav class="lab-nav"><a class="next" href="0002-causal-mask-and-mha.html"><small>下一课 →</small>因果掩码（Causal Mask）与多头注意力（MHA）：防未来穿越与子空间并行</a></nav>
+    <!-- /LAB:NAV -->
+
+    <div class="ask-ai">💬 哪里想再深挖？直接对 AI 助教说：<code>继续</code>（进入第 2 课：因果掩码与多头注意力 MHA）· <code>详细推导</code> · <code>讲解代码</code> · <code>可视化</code> · <code>练一下</code></div>
+    <footer class="lab-footer">生成于 2026-11-01 · lab-teach · 数值经 NumPy + PyTorch F.scaled_dot_product_attention 双重金标准校验</footer>
+  </main>
+
+  <aside class="lab-margin"></aside>
+</div>
+
+<!-- LAB:GOLDEN -->
+<script type="application/json" id="lab-golden">{"Q": [[1.0, 0.0], [0.5, 1.0], [0.0, 1.0]], "K": [[1.0, 0.2], [0.2, 0.8], [0.4, 1.0]], "V": [[1.0, 0.0], [0.4, 0.6], [0.0, 1.0]], "S_raw": [[1.0, 0.2, 0.4], [0.7, 0.9, 1.2], [0.2, 0.8, 1.0]], "S_scaled": [[0.70710678, 0.14142136, 0.28284271], [0.49497475, 0.6363961, 0.84852814], [0.14142136, 0.56568542, 0.70710678]], "A": [[0.45000008, 0.25558687, 0.29441305], [0.2796398, 0.32211985, 0.39824035], [0.23314809, 0.35635874, 0.41049316]], "O": [[0.55223483, 0.44776517], [0.40848774, 0.59151226], [0.37569159, 0.62430841]], "s_raw_12": 1.2, "s_scaled_12": 0.84852814, "a_12": 0.39824035, "o_10": 0.40848774, "o_11": 0.59151226, "jf_dk2_scaled": 0.46589012, "jf_dk64_scaled": 0.46589012, "jf_dk64_unscaled": 0.23603506, "maxw_dk64_unscaled": 0.95748773, "jf_dk256_unscaled": 0.07916564, "maxw_dk256_unscaled": 0.9987573, "jf0_dk2_scaled": 0.46205569, "jf0_dk64_unscaled": 0.06943919, "jf0_dk256_unscaled": 0.002318, "_meta": {"script": "学习/w03-Transformer与现代LLM架构/verify_0001.py", "python": "test", "generated": "2026-11-03"}}</script>
+<!-- /LAB:GOLDEN -->
+
+<script src="../../../.agents/skills/lab-teach/assets/lab.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-math.js"></script>
+<script src="../../../.agents/skills/lab-teach/assets/lab-plot.js"></script>
+<script>
+Lab.ready(() => {
+  const M = LabMath;
+  const tokens = ["猫", "追", "鱼"];
+  const Q = [[1.0, 0.0], [0.5, 1.0], [0.0, 1.0]];
+  const K = [[1.0, 0.2], [0.2, 0.8], [0.4, 1.0]];
+  const V = [[1.0, 0.0], [0.4, 0.6], [0.0, 1.0]];
+
+  const S_raw = M.matmul(Q, M.T(K));
+  const S_scaled = M.scale(S_raw, 1 / Math.sqrt(2));
+  const A = M.softmaxRows(S_scaled);
+  const O = M.matmul(A, V);
+
+  function rowJacFrob(p) {
+    let sumSq = 0;
+    for (let i = 0; i < p.length; i++) {
+      for (let j = 0; j < p.length; j++) {
+        const jij = p[i] * ((i === j ? 1 : 0) - p[j]);
+        sumSq += jij * jij;
+      }
+    }
+    return Math.sqrt(sumSq);
+  }
+
+  function simDk(dk, useScale) {
+    const sUnscaled = M.scale(S_raw, Math.sqrt(dk / 2));
+    const s = useScale ? M.scale(sUnscaled, 1 / Math.sqrt(dk)) : sUnscaled;
+    const attn = M.softmaxRows(s);
+    const jfs = attn.map(rowJacFrob);
+    const maxW = Math.max(...attn.flat());
+    return { s, attn, jfs, jf0: jfs[0], jfMean: M.mean(jfs), maxW };
+  }
+
+  // 与 Python 金标准逐项对齐（9 项校验）
+  const d2On = simDk(2, true);
+  const d64On = simDk(64, true);
+  const d64Off = simDk(64, false);
+  const d256Off = simDk(256, false);
+
+  Lab.check("s_raw_12", S_raw[1][2]);
+  Lab.check("s_scaled_12", S_scaled[1][2], undefined, { tol: 1e-7 });
+  Lab.check("a_12", A[1][2], undefined, { tol: 1e-7 });
+  Lab.check("o_10", O[1][0], undefined, { tol: 1e-7 });
+  Lab.check("o_11", O[1][1], undefined, { tol: 1e-7 });
+  Lab.check("jf_dk2_scaled", d2On.jfMean, undefined, { tol: 1e-7 });
+  Lab.check("jf_dk64_scaled", d64On.jfMean, undefined, { tol: 1e-7 });
+  Lab.check("jf_dk64_unscaled", d64Off.jfMean, undefined, { tol: 1e-7, badge: "#sec-pg" });
+  Lab.check("maxw_dk256_unscaled", d256Off.maxW, undefined, { tol: 1e-7 });
+
+  // 1. §2 四步手算联动热力图
+  const stepHost = document.getElementById("fig-sdpa-steps");
+  const stepCap = document.getElementById("fig-sdpa-cap");
+  const stepViews = [
+    { mat: S_raw, rows: ["Q:猫", "Q:追", "Q:鱼"], cols: ["K:猫", "K:追", "K:鱼"], dec: 2, min: 0, max: 1.3, cap: "步骤 1 / 4：原始点积矩阵 S_raw = QKᵀ（3×3，尚未除以 √2）" },
+    { mat: S_scaled, rows: ["Q:猫", "Q:追", "Q:鱼"], cols: ["K:猫", "K:追", "K:鱼"], dec: 4, min: 0, max: 1.0, cap: "步骤 2 / 4：缩放后分数 S = QKᵀ / √2（标准差复位）" },
+    { mat: A, rows: ["Q:猫", "Q:追", "Q:鱼"], cols: ["K:猫", "K:追", "K:鱼"], dec: 4, min: 0, max: 0.55, cap: "步骤 3 / 4：按行 Softmax 注意力权重 A（每行和 = 1.0000）" },
+    { mat: O, rows: ["O:猫", "O:追", "O:鱼"], cols: ["V₀:施事", "V₁:受事"], dec: 4, min: 0, max: 0.7, cap: "步骤 4 / 4：聚合输出 O = A·V（3×2，每个词融合了全场上下文特征）" },
+  ];
+  Lab.onStep("#step-sdpa", (idx) => {
+    const v = stepViews[idx] || stepViews[0];
+    stepHost.innerHTML = "";
+    LabPlot.heatmap(stepHost, v.mat, {
+      rowLabels: v.rows,
+      colLabels: v.cols,
+      decimals: v.dec,
+      min: v.min,
+      max: v.max,
+      cell: 68,
+      color: idx === 3 ? 2 : 1,
+    });
+    stepCap.textContent = v.cap;
+  });
+
+  // 2. §5 缩放 vs 不缩放 梯度断崖实验台
+  const syncSelect = (rootSel, idx, val) => {
+    const sels = document.querySelectorAll(rootSel + " select");
+    if (sels[idx]) sels[idx].value = val;
+  };
+
+  Lab.playground("#pg-sdpa", {
+    title: "头维度 d_k 增长时：1/√d_k 缩放 vs 不缩放 Softmax 饱和与雅可比范数对比",
+    params: [
+      { name: "dk", label: "模拟头维度 $d_k$", min: 2, max: 256, step: 2, value: 64, fmt: (v) => String(Math.round(v)) },
+    ],
+    selects: [
+      {
+        name: "mode",
+        label: "缩放开关",
+        options: [
+          ["scaled", "✅ 开启 1/√d_k 缩放（标准 SDPA）"],
+          ["unscaled", "❌ 关闭缩放（直接用原始 QKᵀ）"],
+        ],
+        value: "scaled",
+      },
+    ],
+    buttons: [
+      {
+        label: "基准算例 (d_k=2, 开启缩放)",
+        primary: true,
+        onClick: (_p, ctl) => { syncSelect("#pg-sdpa", 0, "scaled"); ctl.set("mode", "scaled"); ctl.set("dk", 2); },
+      },
+      {
+        label: "标准大图 (d_k=64, 开启缩放)",
+        onClick: (_p, ctl) => { syncSelect("#pg-sdpa", 0, "scaled"); ctl.set("mode", "scaled"); ctl.set("dk", 64); },
+      },
+      {
+        label: "⚠️ 关闭缩放 + 拉到 d_k=256（看梯度消失！）",
+        onClick: (_p, ctl) => { syncSelect("#pg-sdpa", 0, "unscaled"); ctl.set("mode", "unscaled"); ctl.set("dk", 256); },
+      },
+    ],
+    caption: "左图：当前 3×3 注意力权重矩阵 A；右图：最大注意力尖峰度 max(A) 与 Softmax 局部雅可比梯度范数 ‖J‖_F 实时柱状对比。",
+    render(p, out) {
+      const useScale = p.mode === "scaled";
+      const cur = simDk(p.dk, useScale);
+      const refScaled = simDk(p.dk, true);
+
+      out.innerHTML =
+        '<div class="cards" style="margin:0 0 12px;align-items:center;">' +
+          '<div style="display:flex;justify-content:center;" class="hm-host"></div>' +
+          '<div class="bar-host"></div>' +
+        '</div>';
+
+      LabPlot.heatmap(out.querySelector(".hm-host"), cur.attn, {
+        rowLabels: tokens.map((t) => "Q:" + t),
+        colLabels: tokens.map((t) => "K:" + t),
+        decimals: 3,
+        min: 0,
+        max: 1,
+        cell: 62,
+        title: useScale ? `已除 √${p.dk}：分布柔和稳定` : `未除 √${p.dk}：迅速尖锐退化为 One-hot`,
+        color: useScale ? 1 : 4,
+      });
+
+      LabPlot.bars(
+        out.querySelector(".bar-host"),
+        [cur.maxW, cur.jf0, cur.jfMean, refScaled.jfMean],
+        {
+          labels: ["max(A) 尖峰", "行0 ‖J₀‖_F", "当前均值 ‖J‖_F", "缩放基准 ‖J‖_F"],
+          max: 1.08,
+          decimals: 4,
+          highlight: [1, 2],
+          color: 1,
+          hlColor: useScale ? 3 : 4,
+          width: 360,
+          height: 235,
+        }
+      );
+
+      Lab.readout(out, {
+        "点积标准差放大倍数 $\\sqrt{d_k}$": Math.sqrt(p.dk),
+        "最大分数差 $\\Delta s_{\\max}$": Math.max(...cur.s[0]) - Math.min(...cur.s[0]),
+        "最大注意力权重 $\\max(A)$": cur.maxW,
+        "行 0（「猫」）雅可比 $\\|J_0\\|_F$": cur.jf0,
+        "全矩阵平均雅可比 $\\overline{\\|J\\|_F}$": cur.jfMean,
+        "相对基准梯度保留率": ((cur.jf0 / refScaled.jf0) * 100).toFixed(1) + "%",
+      }, 4);
+    },
+  });
+});
+</script>
+</body>
+</html>

@@ -7,7 +7,7 @@
   <div class="crumbs">AI Lab / 学习</div>
   <h1>📚 学习地图</h1>
   <p class="subtitle">从零构建一条贯通「深度学习底座 → 轻量 LLM 预训练/SFT/DPO/GRPO → 零框架 Agent 与 Agentic RL → 机器人运动学/模仿学习/VLA」的可复现技术栈与作品集，拿下 27 届高含金量日常实习并在 2027 春招具备三层追问抗压与现场手撕能力。</p>
-  <div class="chips"><span class="chip">🗺 ROADMAP 4/61</span><span class="chip">📘 课题 1</span><span class="chip">📄 课程页 1</span><span class="chip">🧠 学习记录 1</span><span class="chip">🕒 2026-10-30</span></div>
+  <div class="chips"><span class="chip">🗺 ROADMAP 4/61</span><span class="chip">📘 课题 2</span><span class="chip">📄 课程页 10</span><span class="chip">🧠 学习记录 1</span><span class="chip">🕒 2026-11-03</span></div>
 </header>
 <div class="win"><div class="icon">📍</div><div><h4>继续学习</h4>
 <p><b>w01-自动微分与P1</b> → 第 1 课：标量计算图与 <code>Value.backward()</code> 三条铁律</p>
@@ -17,11 +17,17 @@
   <h3>w01-自动微分与P1 <span class="status-tag ">进行中</span></h3>
   <div class="goal">彻底吃透标量计算图反向传播与批量矩阵 BP（Softmax + 交叉熵化简、维度转置对齐、数值稳定性），打通 P1 NumPy/PyTorch MNIST 全链路</div>
   <div class="bar"><span style="width:0%"></span></div>
-  <div class="small muted">0/5 课 · 最近 2026-10-30 · <a href="w01-自动微分与P1/计划.md">计划.md</a></div>
-  <ul><li>⬜ <a href="w01-自动微分与P1/lessons/0001-scalar-autograd-chain.html">1. 标量计算图与 <code>Value.backward()</code> 三条铁律</a></li><li>⬜ 2. 从 Sigmoid 到 Softmax + 交叉熵灵魂梯度 $p - y$</li><li>⬜ 3. 从标量到矩阵：NumPy 两层 MLP 批量反向传播与维度对齐</li><li>⬜ 4. PyTorch 工业级对照：Log-Sum-Exp 防溢出与 <code>nn.CrossEntropyLoss</code></li><li>⬜ 5. Keshav《How to Read a Paper》三遍阅读法</li></ul>
+  <div class="small muted">0/5 课 · 最近 2026-11-02 · <a href="w01-自动微分与P1/计划.md">计划.md</a></div>
+  <ul><li>⬜ <a href="w01-自动微分与P1/lessons/0001-scalar-autograd-chain.html">1. 标量计算图与 <code>Value.backward()</code> 三条铁律</a></li><li>⬜ <a href="w01-自动微分与P1/lessons/0002-softmax-cross-entropy-grad.html">2. 从 Sigmoid 到 Softmax + 交叉熵灵魂梯度 $p - y$</a></li><li>⬜ <a href="w01-自动微分与P1/lessons/0003-numpy-matrix-bp-shapes.html">3. 从标量到矩阵：NumPy 两层 MLP 批量反向传播与维度对齐</a></li><li>⬜ <a href="w01-自动微分与P1/lessons/0004-logsumexp-pytorch-mnist.html">4. PyTorch 工业级对照：Log-Sum-Exp 防溢出与 <code>nn.CrossEntropyLoss</code></a></li><li>⬜ <a href="w01-自动微分与P1/lessons/0005-how-to-read-a-paper.html">5. Keshav《How to Read a Paper》三遍阅读法</a></li></ul>
+</div><div class="card" id="w03-Transformer与现代LLM架构">
+  <h3>w03-Transformer与现代LLM架构 <span class="status-tag ">待开启</span></h3>
+  <div class="goal">从零推通缩放点积注意力、因果掩码与多头重排，吃透现代开源 LLM 四大标准积木（RoPE、RMSNorm + Pre-Norm 残差高速公路、SwiGLU 与 GQA KV Cache 账本）</div>
+  <div class="bar"><span style="width:0%"></span></div>
+  <div class="small muted">0/5 课 · 最近 2026-11-01 · <a href="w03-Transformer与现代LLM架构/计划.md">计划.md</a></div>
+  <ul><li>⬜ <a href="w03-Transformer与现代LLM架构/lessons/0001-scaled-dot-product-attention.html">1. 缩放点积自注意力（SDPA）：$QK^\top / \sqrt{d_k}$ 方差推导与软检索直觉</a></li><li>⬜ <a href="w03-Transformer与现代LLM架构/lessons/0002-causal-mask-and-mha.html">2. 因果掩码（Causal Mask）与多头注意力（MHA）：防未来穿越与子空间并行</a></li><li>⬜ <a href="w03-Transformer与现代LLM架构/lessons/0003-rope-rotary-position-embedding.html">3. 旋转位置编码（RoPE）：复数平面旋转与相对位置内积不变性</a></li><li>⬜ <a href="w03-Transformer与现代LLM架构/lessons/0004-residual-rmsnorm-prenorm.html">4. 深层稳定器：残差梯度高速公路、Pre-Norm vs Post-Norm 与 RMSNorm</a></li><li>⬜ <a href="w03-Transformer与现代LLM架构/lessons/0005-swiglu-and-gqa-kv-cache.html">5. 现代 LLM 标准积木：SwiGLU 门控前馈网络与 GQA 分组查询省显存账本</a></li></ul>
 </div></div>
 <div class="cards">
-  <div class="card"><h3>📇 速查表</h3><ul><li><a href="reference/scalar-autograd-cheatsheet.html">标量自动微分与计算图反向传播速查卡</a></li></ul></div>
+  <div class="card"><h3>📇 速查表</h3><ul><li><a href="reference/matrix-bp-softmax-cheatsheet.html">矩阵反向传播与 Softmax+交叉熵速查卡</a></li><li><a href="reference/modern-transformer-llm-cheatsheet.html">现代 Transformer 与开源 LLM 架构速查卡</a></li><li><a href="reference/scalar-autograd-cheatsheet.html">标量自动微分与计算图反向传播速查卡</a></li></ul></div>
   <div class="card"><h3>🧠 最近的学习记录</h3><ul><li><a href="learning-records/0001-w01-scalar-autograd-baseline.md">0001</a> · 已掌握标量计算图前反向核心算子，下一步衔接批量矩阵 BP 与数值稳定 Softmax</li></ul></div>
   <div class="card"><h3>💬 常用指令</h3><ul><li>开始学习 XX · 继续</li><li>详细推导 · 讲解代码 · 可视化</li><li>复习 · 整理笔记 · 练一下（可选）</li></ul></div>
 </div>

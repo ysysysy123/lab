@@ -102,7 +102,18 @@ bash env/setup_local_conda.sh
 
 ---
 
-## 五、 `study.py` 常用命令速查
+## 五、 每天从「今日工作台」开始
+
+双击桌面的 **AI Lab**，或在仓库中运行 `python3 workbench.py`。首次点击会启动本机工作台，不需要安装依赖。
+
+1. **看今天做什么**：默认安排当前第一节未完成课程；可从本周待办池加入项目、论文任务。
+2. **接着学习**：已有课程直接打开；尚未生成的课程可复制续学指令到 Codex。
+3. **保存并打卡**：学完勾选完成，写一句收获，点击「保存并打卡」。日志存入 `daily/YYYY-MM-DD.md`，勾选同步到课程 `计划.md` 或 `ROADMAP_16W.md`。
+4. **给明天留线索**：「下次从哪里继续」会显示在后续工作台；「打卡记录」可回看最近日志。
+
+「保存进度」可以先存草稿。原有 Markdown 内容保留；只安排任务或打开课程不会自动标记完成。工作台仅监听 `127.0.0.1:18761`，日期按 `America/Los_Angeles` 计算。
+
+## 六、 `study.py` 常用命令速查
 
 | 命令 | 作用 |
 |---|---|
@@ -113,4 +124,3 @@ bash env/setup_local_conda.sh
 | `python3 study.py paper attention --deep` | 用精读模板创建 `papers/` 笔记（加 `--skim` 则用 3 行略读卡） |
 | `python3 study.py lc 001_two_sum` | 在 `leetcode/` 下生成带 `assert` 自测框架的刷题脚本 |
 | `python3 study.py brief` | 一键刷新 `WEB_AI_BRIEF.md`，推上 GitHub 或粘贴给网页版 AI 秒级续接进度 |
-

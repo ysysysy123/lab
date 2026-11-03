@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>现代 Transformer 与开源 LLM 架构速查卡 · 速查</title>
+<meta name="lab:kind" content="reference">
+<meta name="lab:date" content="2026-11-02">
+<link rel="stylesheet" href="../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body class="ref">
+<div class="lab-layout">
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../index.html">📚 学习地图</a> / 速查表</div>
+      <h1>现代 Transformer 与开源 LLM 架构速查卡</h1>
+      <p class="subtitle">从 2017 原版 Attention 到 LLaMA / Qwen / MiniMind 四大标准积木与 KV Cache 显存口算</p>
+      <div class="chips">
+        <span class="chip">📅 更新于 2026-11-02</span>
+        <span class="chip">🔗 来源：<a href="../w03-Transformer与现代LLM架构/lessons/0001-scaled-dot-product-attention.html">w03 第 1–5 课</a></span>
+        <span class="chip">📓 04-LLM大模型/01..09</span>
+      </div>
+    </header>
+
+    <div class="ref-grid">
+      <section>
+        <h3>1. 缩放点积与因果多头注意力</h3>
+        <p>$$\text{Attention}(Q, K, V) = \text{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}} + M_{\text{causal}}\right)V$$</p>
+        <ul>
+          <li><strong>为何除以 $\sqrt{d_k}$</strong>：$q_i, k_i \sim (0,1)$ 独立时 $\text{Var}(q\cdot k)=d_k$；不缩放会导致 Softmax 饱和为 One-hot，雅可比梯度 $\to 0$。</li>
+          <li><strong>因果掩码铁律</strong>：$j &gt; i$ 必须在 <strong>Softmax 之前</strong>填 $-\infty$（使 $e^{-\infty}=0$ 且行和仍为 $1$；切勿在 Softmax 之后置零）。</li>
+          <li><strong>MHA Shape 流</strong>：<code>(B,T,C) → view(B,T,H,d_k) → transpose(1,2) → (B,H,T,d_k) → SDPA → transpose(1,2).contiguous().view(B,T,C) → Wo</code>。</li>
+        </ul>
+      </section>
+
+      <section>
+        <h3>2. RoPE 旋转位置编码</h3>
+        <p>$$R_m = \begin{pmatrix}\cos m\theta &amp; -\sin m\theta \\ \sin m\theta &amp; \cos m\theta\end{pmatrix}, \quad (R_m q)^\top (R_n k) = q^\top R_{n-m} k$$</p>
+        <ul>
+          <li><strong>核心优势</strong>：用<strong>绝对位置原地旋转</strong>（完美兼容 KV Cache，历史 Key 无需重算）实现<strong>严格相对位置内积</strong>与远程自然衰减。</li>
+          <li><strong>多频波长</strong>：$\theta_j = \text{base}^{-2j/d}$（高频分量辨局部词序，低频分量管超长上下文；长文本外推常调大 $\text{base}$ 至 $5\times 10^5 \sim 10^6$）。</li>
+        </ul>
+      </section>
+
+      <section>
+        <h3>3. Pre-Norm + RMSNorm 与 SwiGLU</h3>
+        <p><strong>Pre-Norm 残差主干</strong>（恒等项 $\mathbf{I}$ 保百层梯度直通）：</p>
+        <p>$$h = x + \text{Attn}(\text{RMSNorm}(x)), \quad y = h + \text{SwiGLU}(\text{RMSNorm}(h))$$</p>
+        <p><strong>RMSNorm</strong>（省去均值中心化，半精度下必转 FP32 算均方根）：</p>
+        <p>$$\text{RMSNorm}(x) = \frac{x}{\sqrt{\frac{1}{d}\sum_{i=1}^d x_i^2 + \epsilon}} \odot \gamma$$</p>
+        <p><strong>SwiGLU</strong>（三矩阵总参数 $3 d d_{ff} = 8 d^2 \implies d_{ff} \approx \frac{8}{3}d$）：</p>
+        <p>$$\text{SwiGLU}(x) = \big(\text{SiLU}(x W_{\text{gate}}) \odot (x W_{\text{up}})\big) W_{\text{down}}$$</p>
+      </section>
+
+      <section>
+        <h3>4. GQA 与 KV Cache 显存口算公式</h3>
+        <p>$$\text{KV Bytes} = 2 \times L \times H_{kv} \times d_k \times B \times T \times \text{bytes}$$</p>
+        <table>
+          <tr><th>架构演进项</th><th>2017 Transformer</th><th>现代 LLaMA / Qwen</th></tr>
+          <tr><td>归一化位置与算子</td><td>Post-LN</td><td>Pre-RMSNorm</td></tr>
+          <tr><td>位置编码</td><td>绝对正余弦相加</td><td>RoPE 旋转编码（仅 Q, K）</td></tr>
+          <tr><td>前馈网络 FFN</td><td>ReLU ($4d$, 2 矩阵)</td><td>SwiGLU ($\frac{8}{3}d$, 3 矩阵无偏置)</td></tr>
+          <tr><td>注意力 KV 缓存</td><td>MHA ($H_{kv}=H_q$)</td><td>GQA ($H_{kv}=H_q/g$，省 $g$ 倍显存)</td></tr>
+        </table>
+      </section>
+    </div>
+
+    <footer class="lab-footer">lab-teach 速查表 · 打印友好（浏览器按 Ctrl+P 可直接导出单页 PDF）</footer>
+  </main>
+</div>
+<script src="../../.agents/skills/lab-teach/assets/lab.js"></script>
+</body>
+</html>
+
