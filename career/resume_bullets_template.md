@@ -10,6 +10,9 @@
 ## 经历一：轻量级大语言模型从零构建、对齐与高并发量化部署（对应 P1）
 **技术栈**：PyTorch, Transformers, FlashAttention-2, Unsloth/PEFT (QLoRA), TRL (DPO), vLLM, AWQ
 
+
+**P1 已完成的基础实验（2026-11-05）**：用 NumPy 手写两层 MLP 的批量反向传播，并用 PyTorch 自动微分复现；在 MNIST 独立测试集 10,000 张图片上分别取得 **97.73% / 97.71%** 准确率，对照 Softmax 回归基线 **92.26% / 92.28%**。已保存训练曲线、模型与复现实验参数。依据：[实验记录](../projects/p1-tiny-llm/results/mnist-2026-11-05/README.md)。
+
 - **架构与预训练**：从零实现 BPE 分词器与现代 Decoder-only 架构（RoPE 旋转位置编码、GQA 分组查询注意力、RMSNorm、SwiGLU），在单张 12GB 显卡（BF16 + FlashAttention-2）完成 `[TODO: 参数量，如 26M/104M]` 模型在 `[TODO: 语料规模]` tokens 上的预训练，Perplexity 从 `[TODO]` 降至 `[TODO]`。
 - **领域微调与偏好对齐**：针对工具/机器人结构化指令解析场景构造 `[TODO: N]` 条指令及偏好对数据；先通过 SFT + Loss Masking 建立指令遵循能力，再引入 DPO 直接偏好优化抑制格式幻觉；同步基于 QLoRA 微调 `Qwen2.5-7B`，JSON Schema 严格解析准确率由基线的 `[TODO]%` 提升至 `[TODO]%`。
 - **推理加速与量化**：基于 `vLLM`（PagedAttention + Continuous Batching）部署推理服务，对比 FP16 与 AWQ 4-bit 量化方案，显存占用降低 `[TODO]%`，并发吞吐提升 `[TODO]x`，精度损失控制在 `[TODO]%` 以内。

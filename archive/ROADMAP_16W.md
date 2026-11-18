@@ -3,6 +3,14 @@
 > 说明：把已完成项的 `- [ ]` 改为 `- [x]` 后，运行 `python3 study.py status` 会自动计算各阶段完成率。
 > 节奏基准：每天 5–6 小时 × 每周 6 天（若每天 3 小时，按 1.5 倍拉长周次即可，顺序不变）。
 
+## 2026-11-03 · Agentic RL 学习资源接入
+
+已加入 [Datawhale Agentic-RL Lab](https://github.com/datawhalechina/agentic-rl-lab)，作为 P3 的主教材与实验参考。当前仍先完成矩阵反向传播与 MNIST，再推进语言建模、小 GPT、MiniMind 和基础 RAG／Agent。
+
+**执行顺序**：P1 小模型训练 → P2 基础 RAG／Agent 与评估 → P3 Agentic RL → 按方向继续具身智能。先以约 16 个学习周完成并整理 P1、P2；P3 作为后续专项，原 W09–W10 保留为任务编号，按先修掌握情况展开，具身阶段随之顺延。
+
+P3 路线为 **Loss Functions → GRPO → Search-R1／ReTool 二选一**，再按实验问题选读 DAPO／GSPO。详细先修、运行方式与成果要求见 [P3 项目计划](projects/p3-agentic-rl/README.md)。
+
 ---
 
 ## 阶段一：串行打地基（W01–W04）→ 里程碑 M1：从零手搓 GPT
@@ -14,9 +22,9 @@
 - [X] **[环境]** 运行 `bash env/setup_local_conda.sh` 配好 `test` 环境，并通过 `python env/check_gpu.py`
 - [X] **[环境]** 提交远程 80GB A800 算力申请，配好免密 SSH 与 WandB 账号
 - [X] **[原理]** 看完 3Blue1Brown《神经网络》第 1–4 集 + PyTorch 60min Blitz
-- [x] **[盲写]** 阅读并独立默写一遍 `concepts/w01_micro_autograd.py`（理解标量链式法则）
-- [ ] **[项目 P1]** 用 NumPy 与 PyTorch 分别实现逻辑回归/MLP 跑通 MNIST（准确率 ≥ 97%）
-- [ ] **[论文]** 精读方法论 *How to Read a Paper* (Keshav)
+- [X] **[盲写]** 阅读并独立默写一遍 `concepts/w01_micro_autograd.py`（理解标量链式法则）
+- [X] **[项目 P1]** 用 NumPy 与 PyTorch 分别实现逻辑回归/MLP 跑通 MNIST（准确率 ≥ 97%）
+- [X] **[论文]** 精读方法论 *How to Read a Paper* (Keshav)
 
 ### W02 · 自动微分与反向传播破冰
 
@@ -24,7 +32,7 @@
 
 - [ ] **[原理]** 跟敲 Karpathy *Zero to Hero*：`micrograd` + `makemore` Part 1–2
 - [ ] **[盲写]** 在 `concepts/` 独立手写支持 `tanh/relu/exp` 的微型计算图并做数值梯度检验
-- [ ] **[论文]** 略读 *ResNet* (2015) —— 搞懂残差连接 $y = F(x) + x$ 为何是深层网络的梯度高速公路
+- [X] **[论文]** 略读 *ResNet* (2015) —— 搞懂残差连接 $y = F(x) + x$ 为何是深层网络的梯度高速公路
 
 ### W03 · 归一化、训练动态与 Attention 直觉
 
@@ -87,21 +95,21 @@
 - [ ] **[求职 M2]** 填写 `career/resume_bullets_template.md` 前两段项目，产出 **简历 v1**，开始投递**日常实习**！
 - [ ] **[论文]** 略读 *Reflexion* 与 *vLLM (PagedAttention)*
 
-### W09 · 强化学习核心与 GRPO 原型验证
+### W09 · 后续专项：强化学习核心与 GRPO 原型验证
 
-- **算力**：本机 4080 或 Colab T4 跑 Unsloth 0.5B/1.5B GRPO
+- **启动条件**：完成 P1 的训练／验证流程与 P2 的基础 Agent、固定评估集。主教材的 PyTRIO 示例使用远程训练服务；本机／A800 的 TRL 或 Unsloth 路线单独选配。
 
-- [ ] **[原理]** 学习策略梯度 → Actor-Critic → PPO → GRPO（配合 `python3 study.py dict GRPO` 对照公式）
-- [ ] **[项目 P3]** 在 GSM8K 数学推理子集上跑通 `Qwen2.5-0.5B/1.5B` 的 GRPO 训练，观察思维链长度与奖励爬升曲线
+- [ ] **[原理]** 补策略梯度、优势估计与重要性采样，学习 [Loss Functions](https://github.com/datawhalechina/agentic-rl-lab/blob/main/experiments/loss-functions/readme.md) 中 IS／PPO／CISPO 的公式与梯度，再理解 GRPO 组相对优势
+- [ ] **[项目 P3]** 按 [GRPO 启动指南](https://github.com/datawhalechina/agentic-rl-lab/blob/main/experiments/grpo/start.md) 在 GSM8K 上做小规模实验，记录奖励、生成长度和训练成本，并补充独立评估；先用同步入口
 - [ ] **[论文]** 🔴 精读 *DeepSeekMath (GRPO)* 与 *DeepSeek-R1*；略读 *PPO*
 - [ ] **[刷题]** 完成 Hot100 动态规划前 6 题
 
-### W10 · 里程碑 M3：双线汇合 —— Agentic RL（自主工具调用强化学习）
+### W10 · 后续专项 M3：Agentic RL（Search-R1／ReTool 二选一）
 
-- **算力**：远程 A800 80GB（主力训练 `Qwen2.5-3B`）
+- **运行方式**：继续 PyTRIO 远程训练，或另配 A800 上的 TRL／veRL 实现；进入实验时确定其中一条路线。检索助手选 Search-R1，代码执行助手选 ReTool。
 
-- [ ] **[项目 P3]** 完成 `projects/p3-agentic-rl`：参考 Search-R1，在 A800 用 veRL/TRL 训练 3B 模型在多跳问答中自主决定何时调用 W06 的本地检索器，产出 **RL vs 纯 Prompting vs SFT** 准确率对比表
-- [ ] **[论文]** 🔴 精读 *Search-R1*；略读 *SWE-agent*
+- [ ] **[项目 P3]** 参考 [Agentic-RL Lab](https://github.com/datawhalechina/agentic-rl-lab) 完成 Search-R1 或 ReTool 最小实验；在相同模型、工具、数据和调用预算下比较 Base／Prompting 与 RL，记录任务成功率、工具调用次数和成本；SFT 对照按需加入
+- [ ] **[论文]** 精读所选路线的 *Search-R1* 或 *ReTool*；基础实验完成后按需选读 DAPO／GSPO
 - [ ] **[刷题]** 完成 Hot100 动态规划进阶与贪心 6 题
 
 ---

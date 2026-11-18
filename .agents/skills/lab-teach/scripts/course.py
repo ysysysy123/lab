@@ -46,7 +46,7 @@ LEARN_DIR = LAB_DIR / "学习"
 ASSETS_DIR = SKILL_DIR / "assets"
 TEMPLATES_DIR = SKILL_DIR / "templates"
 REF_DIR = Path(os.environ.get("AUTUMN_REF_DIR", str(LAB_DIR.parent))).resolve()
-ROADMAP_FILE = LAB_DIR / "ROADMAP_16W.md"
+ROADMAP_FILE = LAB_DIR / "PLAN.md" if (LAB_DIR / "PLAN.md").exists() else (LAB_DIR / "archive" / "ROADMAP_16W.md")
 RECORDS_DIR = LEARN_DIR / "learning-records"
 REFS_DIR = LEARN_DIR / "reference"
 PLAN_NAME = "计划.md"
@@ -632,7 +632,7 @@ def build_index(quiet: bool = False) -> None:
   <div class="crumbs">AI Lab / 学习</div>
   <h1>📚 学习地图</h1>
   <p class="subtitle">{e(mission_why() or 'LLM → Agent → 具身智能：把每个知识点讲透、跑通、讲得出来')}</p>
-  <div class="chips"><span class="chip">🗺 ROADMAP {rd}/{rt}</span><span class="chip">📘 课题 {len(ts)}</span><span class="chip">📄 课程页 {n_less}</span><span class="chip">🧠 学习记录 {len(recs)}</span><span class="chip">🕒 {TODAY.isoformat()}</span></div>
+  <div class="chips"><span class="chip">🗺 PLAN {rd}/{rt}</span><span class="chip">📘 课题 {len(ts)}</span><span class="chip">📄 课程页 {n_less}</span><span class="chip">🧠 学习记录 {len(recs)}</span><span class="chip">🕒 {TODAY.isoformat()}</span></div>
 </header>
 {cont}
 <h2>课题</h2>
@@ -642,7 +642,7 @@ def build_index(quiet: bool = False) -> None:
   <div class="card"><h3>🧠 最近的学习记录</h3><ul>{rec_html}</ul></div>
   <div class="card"><h3>💬 常用指令</h3><ul><li>开始学习 XX · 继续</li><li>详细推导 · 讲解代码 · 可视化</li><li>复习 · 整理笔记 · 练一下（可选）</li></ul></div>
 </div>
-<footer class="lab-footer">lab-teach · 进度真相源：ROADMAP_16W.md（周级）+ 各课题 计划.md（课级）</footer>
+<footer class="lab-footer">lab-teach · 进度真相源：PLAN.md（周级唯一入口）+ 各课题 计划.md（课级）</footer>
 </main></div><script src="{assets}/lab.js"></script></body></html>
 """
     (LEARN_DIR / "index.html").write_text(page, encoding="utf-8")

@@ -1,23 +1,65 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>今日 · AI Lab</title>
-  <link rel="stylesheet" href="/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#12172a" />
+  <title>AI Lab · 交互式学习台（ADHD 零决策驾驶舱）</title>
+  <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <aside class="sidebar">
-    <a class="brand" href="/"><span class="brand-mark">L<span>·</span></span><span>AI LAB<small>个人学习工作台</small></span></a>
-    <nav aria-label="工作台导航">
-      <button data-view="today" class="active"><span>◷</span> 今日计划</button>
-      <button data-view="roadmap"><span>☷</span> 学习路线</button>
-      <button data-view="history"><span>▤</span> 打卡记录</button>
+<div class="mobilehead"><strong>◈ AI Lab 学习台</strong><button id="menuToggle" aria-label="打开导航">☰ 导航</button></div>
+<div class="app">
+  <aside id="sidebar">
+    <div class="logo">
+      <div class="logo-mark">◈</div>
+      <div>
+        <strong>AI Lab</strong>
+        <small>ADHD 零决策学习驾驶舱</small>
+      </div>
+    </div>
+    <div class="nav-title">每日空间</div>
+    <nav class="nav" aria-label="主要导航">
+      <button data-page="home" class="active"><span class="sym">⌂</span><span>今日驾驶舱</span><span class="nav-pill" id="navTodayBadge">今日3步</span></button>
+      <button data-page="lessons"><span class="sym">▤</span><span>课程中心</span><span class="nav-pill" id="navLessonBadge">5/16</span></button>
+      <button data-page="projects"><span class="sym">▦</span><span>10周计划与项目</span><span class="nav-pill" id="navPlanBadge">W00</span></button>
+      <button data-page="leetcode"><span class="sym">💻</span><span>力扣 Hot100 打卡</span><span class="nav-pill" id="navLcBadge">0/51</span></button>
+      <button data-page="cards"><span class="sym">🧠</span><span>间隔复习卡</span><span class="nav-pill warn" id="navCardBadge">0到期</span></button>
+      <button data-page="demos"><span class="sym">◉</span><span>原理交互实验</span></button>
+      <button data-page="journal"><span class="sym">▧</span><span>日志与远程同步</span></button>
     </nav>
-    <div class="sidebar-note"><span class="status-dot"></span> 本地 Markdown 工作区<p>每天推进一点，<br>留下明天能接上的线索。</p></div>
-    <a id="course-map" class="sidebar-link" target="_blank" rel="noopener">课程与速查表 ↗</a>
+    <div class="sidebar-foot">
+      <div><span class="dot"></span> 真实文件读写 · 自动 Git 同步</div>
+      <div id="sidebarGitHead" style="margin:6px 0;color:#9da8c3;word-break:break-all">正在读取仓库状态…</div>
+      <a href="/files/PLAN.md" target="_blank" rel="noopener">查看 PLAN.md</a> ·
+      <a id="sidebarMapLink" href="/files/%E5%AD%A6%E4%B9%A0/index.html" target="_blank" rel="noopener">学习地图 ↗</a><br />
+      <a href="https://github.com/ysysysy123/lab" target="_blank" rel="noopener">GitHub 仓库 (ysysysy123/lab) ↗</a>
+    </div>
   </aside>
-  <main id="app" aria-live="polite"><div class="loading">正在读取学习计划…</div></main>
-  <div id="toast" role="status"></div>
-  <script src="/app.js"></script>
+
+  <main>
+    <div class="main-inner">
+      <div class="topbar">
+        <div>
+          <div class="eyebrow">PERSONAL AI LEARNING STUDIO · ADHD FOCUS MODE</div>
+          <span class="muted" style="font-size:12px">不用找文件、不用纠结先后——按顺序把今天这 3 张卡片打勾就算胜利</span>
+        </div>
+        <div class="topbar-right">
+          <div class="top-badge" id="gitStatusBadge" title="每次勾选或保存都会自动 git commit & push 到 GitHub">
+            <span class="dot" id="gitDot"></span>
+            <span id="gitStatusText">自动同步已开启</span>
+          </div>
+          <button class="btn small" id="syncNowBtn">🔄 立即同步 GitHub</button>
+          <div class="top-badge"><span id="dateText">加载日期…</span></div>
+        </div>
+      </div>
+
+      <div id="appRoot"><div class="empty">正在读取本地仓库与今日计划…</div></div>
+      <div class="footer">AI Lab · Learning Studio v2 · 本地真实 Markdown 驱动 + GitHub 自动远程同步</div>
+    </div>
+  </main>
+</div>
+<div class="save-toast" id="toast" role="status" aria-live="polite">已保存并自动同步 GitHub</div>
+<script src="/app.js"></script>
 </body>
 </html>

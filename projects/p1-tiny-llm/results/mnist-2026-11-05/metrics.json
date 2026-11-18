@@ -1,0 +1,456 @@
+{
+  "seed": 42,
+  "batch_size": 128,
+  "debug": false,
+  "train_samples": 60000,
+  "optimizer": "SGD",
+  "numpy_version": "2.4.6",
+  "torch_version": "2.11.0+cu128",
+  "gpu": "NVIDIA GeForce RTX 4080 Laptop GPU",
+  "results": [
+    {
+      "test_accuracy": 0.9226,
+      "test_loss": 0.2786839927157731,
+      "correct": 9226,
+      "test_samples": 10000,
+      "predictions": [
+        7,
+        2,
+        1,
+        0,
+        4,
+        1,
+        4,
+        9,
+        6,
+        9,
+        0,
+        6
+      ],
+      "labels": [
+        7,
+        2,
+        1,
+        0,
+        4,
+        1,
+        4,
+        9,
+        5,
+        9,
+        0,
+        6
+      ],
+      "backend": "NumPy",
+      "model": "lr",
+      "device": "CPU",
+      "precision": "float64",
+      "epochs": 10,
+      "learning_rate": 0.1,
+      "history": [
+        {
+          "epoch": 1,
+          "train_loss": 0.3686786817504755,
+          "seconds": 0.2729742970004736
+        },
+        {
+          "epoch": 2,
+          "train_loss": 0.30214659484497974,
+          "seconds": 0.271283301000949
+        },
+        {
+          "epoch": 3,
+          "train_loss": 0.289546231692527,
+          "seconds": 0.27125786900069215
+        },
+        {
+          "epoch": 4,
+          "train_loss": 0.2826437634673103,
+          "seconds": 0.27203596900289995
+        },
+        {
+          "epoch": 5,
+          "train_loss": 0.27864656836999663,
+          "seconds": 0.27199176399881253
+        },
+        {
+          "epoch": 6,
+          "train_loss": 0.2746358076674946,
+          "seconds": 0.2709767619999184
+        },
+        {
+          "epoch": 7,
+          "train_loss": 0.2719703005337847,
+          "seconds": 0.2709766670013778
+        },
+        {
+          "epoch": 8,
+          "train_loss": 0.2695508229407476,
+          "seconds": 0.2719562619968201
+        },
+        {
+          "epoch": 9,
+          "train_loss": 0.26695264460662615,
+          "seconds": 0.27074626899775467
+        },
+        {
+          "epoch": 10,
+          "train_loss": 0.2664243056696371,
+          "seconds": 0.2726028580000275
+        }
+      ],
+      "training_seconds": 2.7168020179997256,
+      "samples_per_second": 220847.8924944838,
+      "peak_gpu_memory_mib": 0,
+      "before_predictions": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "checkpoint": "runs/20261105-031927-487380/numpy_lr.npz",
+      "passed": null
+    },
+    {
+      "backend": "PyTorch",
+      "model": "lr",
+      "device": "cuda",
+      "precision": "BF16 autocast; FP32 parameters/evaluation",
+      "epochs": 10,
+      "learning_rate": 0.1,
+      "history": [
+        {
+          "epoch": 1,
+          "train_loss": 0.36868422672748563,
+          "seconds": 0.5596944079989044
+        },
+        {
+          "epoch": 2,
+          "train_loss": 0.30217945211728414,
+          "seconds": 0.4571603549993597
+        },
+        {
+          "epoch": 3,
+          "train_loss": 0.289553829908371,
+          "seconds": 0.44515895200311206
+        },
+        {
+          "epoch": 4,
+          "train_loss": 0.28266831551392874,
+          "seconds": 0.4663297799997963
+        },
+        {
+          "epoch": 5,
+          "train_loss": 0.2786536476929983,
+          "seconds": 0.4405545580011676
+        },
+        {
+          "epoch": 6,
+          "train_loss": 0.2746471265633901,
+          "seconds": 0.44310147800206323
+        },
+        {
+          "epoch": 7,
+          "train_loss": 0.27202667384147644,
+          "seconds": 0.4501020520001475
+        },
+        {
+          "epoch": 8,
+          "train_loss": 0.2695872526963552,
+          "seconds": 0.44204884200007655
+        },
+        {
+          "epoch": 9,
+          "train_loss": 0.26696204662323,
+          "seconds": 0.4655726199998753
+        },
+        {
+          "epoch": 10,
+          "train_loss": 0.2664542722622554,
+          "seconds": 0.4383349210002052
+        }
+      ],
+      "training_seconds": 4.608057966004708,
+      "samples_per_second": 130206.69540756967,
+      "peak_gpu_memory_mib": 21.15576171875,
+      "test_accuracy": 0.9228,
+      "test_loss": 0.278610548377037,
+      "correct": 9228,
+      "test_samples": 10000,
+      "predictions": [
+        7,
+        2,
+        1,
+        0,
+        4,
+        1,
+        4,
+        9,
+        6,
+        9,
+        0,
+        6
+      ],
+      "labels": [
+        7,
+        2,
+        1,
+        0,
+        4,
+        1,
+        4,
+        9,
+        5,
+        9,
+        0,
+        6
+      ],
+      "before_predictions": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "checkpoint": "runs/20261105-031927-487380/torch_lr.pt",
+      "passed": null
+    },
+    {
+      "test_accuracy": 0.9773,
+      "test_loss": 0.07219477815662849,
+      "correct": 9773,
+      "test_samples": 10000,
+      "predictions": [
+        7,
+        2,
+        1,
+        0,
+        4,
+        1,
+        4,
+        9,
+        6,
+        9,
+        0,
+        6
+      ],
+      "labels": [
+        7,
+        2,
+        1,
+        0,
+        4,
+        1,
+        4,
+        9,
+        5,
+        9,
+        0,
+        6
+      ],
+      "backend": "NumPy",
+      "model": "mlp",
+      "device": "CPU",
+      "precision": "float64",
+      "epochs": 10,
+      "learning_rate": 0.1,
+      "history": [
+        {
+          "epoch": 1,
+          "train_loss": 0.29058128460824867,
+          "seconds": 0.5119981819989334
+        },
+        {
+          "epoch": 2,
+          "train_loss": 0.13697682976962267,
+          "seconds": 0.5133803290009382
+        },
+        {
+          "epoch": 3,
+          "train_loss": 0.10009739680841491,
+          "seconds": 0.5207165400024678
+        },
+        {
+          "epoch": 4,
+          "train_loss": 0.07838775811047909,
+          "seconds": 0.5127789399994072
+        },
+        {
+          "epoch": 5,
+          "train_loss": 0.06519476167430818,
+          "seconds": 0.5103785440005595
+        },
+        {
+          "epoch": 6,
+          "train_loss": 0.054148702253062855,
+          "seconds": 0.5120774110000639
+        },
+        {
+          "epoch": 7,
+          "train_loss": 0.046199322447114693,
+          "seconds": 0.5120435919998272
+        },
+        {
+          "epoch": 8,
+          "train_loss": 0.04027857171474365,
+          "seconds": 0.5125932969967835
+        },
+        {
+          "epoch": 9,
+          "train_loss": 0.03465537491477332,
+          "seconds": 0.5110192200008896
+        },
+        {
+          "epoch": 10,
+          "train_loss": 0.030440272129198052,
+          "seconds": 0.5115143270013505
+        }
+      ],
+      "training_seconds": 5.128500382001221,
+      "samples_per_second": 116993.26417245399,
+      "peak_gpu_memory_mib": 0,
+      "before_predictions": [
+        7,
+        1,
+        7,
+        7,
+        7,
+        7,
+        7,
+        2,
+        0,
+        7,
+        7,
+        7
+      ],
+      "checkpoint": "runs/20261105-031927-487380/numpy_mlp.npz",
+      "passed": true
+    },
+    {
+      "backend": "PyTorch",
+      "model": "mlp",
+      "device": "cuda",
+      "precision": "BF16 autocast; FP32 parameters/evaluation",
+      "epochs": 10,
+      "learning_rate": 0.1,
+      "history": [
+        {
+          "epoch": 1,
+          "train_loss": 0.2910474377552668,
+          "seconds": 0.5232813689981413
+        },
+        {
+          "epoch": 2,
+          "train_loss": 0.1371991327424844,
+          "seconds": 0.5011732220009435
+        },
+        {
+          "epoch": 3,
+          "train_loss": 0.1002069902976354,
+          "seconds": 0.5201395220028644
+        },
+        {
+          "epoch": 4,
+          "train_loss": 0.07848232559363047,
+          "seconds": 0.4874326149983972
+        },
+        {
+          "epoch": 5,
+          "train_loss": 0.0652619326810042,
+          "seconds": 0.4545899789991381
+        },
+        {
+          "epoch": 6,
+          "train_loss": 0.05418735547264417,
+          "seconds": 0.4396589239986497
+        },
+        {
+          "epoch": 7,
+          "train_loss": 0.04631802618106206,
+          "seconds": 0.44287647400051355
+        },
+        {
+          "epoch": 8,
+          "train_loss": 0.040314169666171074,
+          "seconds": 0.439664150999306
+        },
+        {
+          "epoch": 9,
+          "train_loss": 0.03477143071691195,
+          "seconds": 0.41975964000084787
+        },
+        {
+          "epoch": 10,
+          "train_loss": 0.0305138918787241,
+          "seconds": 0.4195449059989187
+        }
+      ],
+      "training_seconds": 4.64812080199772,
+      "samples_per_second": 129084.42477272222,
+      "peak_gpu_memory_mib": 22.80859375,
+      "test_accuracy": 0.9771,
+      "test_loss": 0.0721060311421752,
+      "correct": 9771,
+      "test_samples": 10000,
+      "predictions": [
+        7,
+        2,
+        1,
+        0,
+        4,
+        1,
+        4,
+        9,
+        6,
+        9,
+        0,
+        6
+      ],
+      "labels": [
+        7,
+        2,
+        1,
+        0,
+        4,
+        1,
+        4,
+        9,
+        5,
+        9,
+        0,
+        6
+      ],
+      "before_predictions": [
+        7,
+        1,
+        7,
+        7,
+        7,
+        7,
+        7,
+        2,
+        0,
+        7,
+        7,
+        7
+      ],
+      "checkpoint": "runs/20261105-031927-487380/torch_mlp.pt",
+      "passed": true
+    }
+  ]
+}

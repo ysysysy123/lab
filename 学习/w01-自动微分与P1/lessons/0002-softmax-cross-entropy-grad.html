@@ -152,7 +152,7 @@
       <p>下面截取本仓 P1 实战脚本 <code>projects/p1-tiny-llm/src/w01_mlp_mnist.py</code> 第 55–105 行真实源码。点击右侧讲解卡片定位每一处工程防坑细节：</p>
 
       <div class="code-walk" data-dim>
-<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="55" data-href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code class="language-python">    @staticmethod
+<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="94" data-href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code class="language-python">    @staticmethod
     def softmax(z: np.ndarray) -&gt; np.ndarray:
         # 防数值溢出减去 max
         shift_z = z - np.max(z, axis=1, keepdims=True)
@@ -180,34 +180,22 @@
         Z1, A1, Z2, P = self.forward(X)
 
         # 1. 计算交叉熵损失
-        log_likelihood = -np.log(P[np.arange(B), y] + 1e-12)
-        loss = float(np.mean(log_likelihood))
+        loss = cross_entropy(Z2, y)
 
         # 2. 构造 One-Hot 标签 Y
         Y = np.zeros_like(P)
         Y[np.arange(B), y] = 1.0
 
-        # =================================================================
-        # TODO(human): 手撕矩阵反向传播 (4 行核心数学公式)
-        # 提示:
-        # dZ2 = (P - Y) / B                       # Softmax+CrossEntropy 优雅导数: (B, 10)
-        # dW2 = ...                               # (hidden_dim, 10)
-        # db2 = ...                               # (1, 10)
-        # dA1 = ...                               # (B, hidden_dim)
-        # dZ1 = dA1 * (Z1 &gt; 0)                    # ReLU 局部导数: (B, hidden_dim)
-        # dW1 = ...                               # (in_dim, hidden_dim)
-        # db1 = ...                               # (1, hidden_dim)
-        # =================================================================
-        # 下面 7 行请你在弄清维度后补全，跑通训练：
+        # 从输出层向输入层求梯度，全部算完后再更新参数。
         dZ2 = (P - Y) / B
         dW2 = A1.T @ dZ2
         db2 = np.sum(dZ2, axis=0, keepdims=True)</code></pre>
         <ol class="walk">
-          <li data-lines="56-60"><strong>平移防溢出 Softmax</strong>：若某行 logit 达到 $1000$，<code>np.exp(1000)</code> 会直接溢出成 <code>inf</code>。先减去每行最大值 $m = \max_j z_j$，等价于分子分母同乘 $e^{-m}$，概率值分毫不差，且所有指数项 $\le e^0 = 1$！注意 <code>keepdims=True</code> 保持 <code>(B, 1)</code> 才能按行广播。</li>
-          <li data-lines="70-71"><strong>Logits <code>Z2</code> 与概率 <code>P</code> 分离</strong>：<code>Z2</code> 形状 <code>(B, 10)</code> 是线性层原始打分（不要在 <code>Z2</code> 后再套 ReLU，否则负数打分全被截断成 0！）；<code>P</code> 存下前向概率供反向直接复用。</li>
-          <li data-lines="83-84"><strong>花式索引挑出真实类概率</strong>：<code>P[np.arange(B), y]</code> 一次性取出第 $b$ 行第 $y_b$ 列元素，得到形状 <code>(B,)</code> 的正确类概率向量，加 <code>1e-12</code> 防止 <code>log(0)</code> 产生 <code>NaN</code>（第 4 课会升级为工业级 <code>logsumexp</code> 融合算子）。</li>
-          <li data-lines="87-88"><strong>两行构造 One-hot 矩阵 <code>Y</code></strong>：用 <code>np.zeros_like(P)</code> 创建 <code>(B, 10)</code> 全零阵，再用相同的花式索引把每行真实数字位置填为 <code>1.0</code>。</li>
-          <li data-lines="102"><strong>反向传播点火 <code>dZ2 = (P - Y) / B</code></strong>：直接落地 §3 推导结果！无需显式构造 $10\times 10$ 雅可比矩阵，一行数组减法同时完成 Softmax 与 Cross-Entropy 两层回传，除以 <code>B</code> 对齐第 84 行的 <code>np.mean</code>。</li>
+          <li data-lines="95-99"><strong>平移防溢出 Softmax</strong>：若某行 logit 达到 $1000$，<code>np.exp(1000)</code> 会直接溢出成 <code>inf</code>。先减去每行最大值 $m = \max_j z_j$，等价于分子分母同乘 $e^{-m}$，概率值分毫不差，且所有指数项 $\le e^0 = 1$！注意 <code>keepdims=True</code> 保持 <code>(B, 1)</code> 才能按行广播。</li>
+          <li data-lines="109-110"><strong>Logits <code>Z2</code> 与概率 <code>P</code> 分离</strong>：<code>Z2</code> 形状 <code>(B, 10)</code> 是线性层原始打分（不要在 <code>Z2</code> 后再套 ReLU，否则负数打分全被截断成 0！）；<code>P</code> 存下前向概率供反向直接复用。</li>
+          <li data-lines="122"><strong>直接从 Logits 计算交叉熵</strong>：<code>cross_entropy(Z2, y)</code> 内部先减每行最大值，用 Log-Sum-Exp 计算平均损失；第 4 课展开解释。</li>
+          <li data-lines="125-126"><strong>两行构造 One-hot 矩阵 <code>Y</code></strong>：用 <code>np.zeros_like(P)</code> 创建 <code>(B, 10)</code> 全零阵，再用相同的花式索引把每行真实数字位置填为 <code>1.0</code>。</li>
+          <li data-lines="129"><strong>反向传播点火 <code>dZ2 = (P - Y) / B</code></strong>：直接落地 §3 推导结果！无需显式构造 $10\times 10$ 雅可比矩阵，一行数组减法同时完成 Softmax 与 Cross-Entropy 两层回传，除以 <code>B</code> 对齐损失中的批量平均。</li>
         </ol>
       </div>
     </section>

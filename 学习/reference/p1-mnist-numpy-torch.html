@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>P1 MNIST 实战：NumPy 矩阵反向传播 vs PyTorch GPU 对照速查 · 速查</title>
+<meta name="lab:kind" content="reference">
+<meta name="lab:date" content="2026-11-06">
+<link rel="stylesheet" href="../../.agents/skills/lab-teach/assets/lab.css">
+</head>
+<body class="ref">
+<div class="lab-layout">
+  <main class="lab-main">
+    <header class="lab-hero">
+      <div class="crumbs"><a href="../index.html">📚 学习地图</a> / 速查表</div>
+      <h1>P1 MNIST 实战：NumPy 矩阵反向传播 vs PyTorch GPU 对照速查</h1>
+      <p class="subtitle">手写 NumPy 与 PyTorch GPU (BF16) 达到 97.7% 严丝合缝对齐的数学映射、7 行核心 BP 与工业级避坑指南</p>
+      <div class="chips">
+        <span class="chip">📅 更新于 2026-11-06</span>
+        <span class="chip">🔗 来源课程：<a href="../w01-自动微分与P1/lessons/0003-numpy-matrix-bp-shapes.html">第 3 课</a> · <a href="../w01-自动微分与P1/lessons/0004-logsumexp-pytorch-mnist.html">第 4 课</a></span>
+        <span class="chip">💻 projects/p1-tiny-llm/src/w01_mlp_mnist.py</span>
+      </div>
+    </header>
+
+    <div class="ref-grid">
+      <!-- 卡片 1: 实验验证对照 -->
+      <section>
+        <h3>1. 实战指标对照：为什么两者严丝合缝？</h3>
+        <p>在同种子 42、同初始化参数、batch size 128、SGD lr=0.1、10 轮下实跑：</p>
+        <table class="shape">
+          <tr><th>模型方案</th><th>硬件与精度</th><th>第 1 轮 Loss</th><th>第 10 轮 Loss</th><th>10k 测试准确率</th></tr>
+          <tr><td>NumPy 逻辑回归</td><td>CPU float64</td><td>0.36868</td><td>0.26642</td><td>92.26%</td></tr>
+          <tr><td>PyTorch 逻辑回归</td><td>GPU BF16</td><td>0.36868</td><td>0.26645</td><td>92.28%</td></tr>
+          <tr><td>NumPy 两层 MLP</td><td>CPU float64</td><td>0.29058</td><td>0.03044</td><td><strong>97.73%</strong></td></tr>
+          <tr><td>PyTorch 两层 MLP</td><td>GPU BF16</td><td>0.29105</td><td>0.03051</td><td><strong>97.71%</strong></td></tr>
+        </table>
+        <p class="small muted">结论：① 手写 7 行矩阵 BP 在数学推导与数值梯度上 100% 正确；② 0.02% 微小差异来自 float64 vs bfloat16 尾数精度与 GPU 并行归约加法顺序；③ 非线性激活 ReLU 使分类准确率从 92.2% 跃迁至 97.7%。</p>
+      </section>
+
+      <!-- 卡片 2: 张量 Shape 对齐表 -->
+      <section>
+        <h3>2. 核心张量 Shape 追踪表 (Batch=128)</h3>
+        <table class="shape">
+          <tr><th>符号</th><th>张量形状</th><th>物理意义与数学关系</th></tr>
+          <tr><td>$X$</td><td><code>(128, 784)</code></td><td>批次展平图像，经标准归一化</td></tr>
+          <tr><td>$W_1, b_1$</td><td><code>(784, 128), (1, 128)</code></td><td>隐层参数（He/Kaiming 随机初始化）</td></tr>
+          <tr><td>$Z_1, A_1$</td><td><code>(128, 128)</code></td><td>$Z_1 = X W_1 + b_1$；$A_1 = \max(0, Z_1)$ (ReLU)</td></tr>
+          <tr><td>$W_2, b_2$</td><td><code>(128, 10), (1, 10)</code></td><td>输出层参数</td></tr>
+          <tr><td>$Z_2, P$</td><td><code>(128, 10)</code></td><td>Logits 分数 $Z_2 = A_1 W_2 + b_2$；$P = \operatorname{softmax}(Z_2)$</td></tr>
+          <tr><td>$\mathrm{d}Z_2$</td><td><code>(128, 10)</code></td><td>$\mathrm{d}Z_2 = (P - Y) / B$（Softmax+交叉熵灵魂化简梯度）</td></tr>
+        </table>
+      </section>
+
+      <!-- 卡片 3: NumPy 7 行核心反向传播 -->
+      <section>
+        <h3>3. NumPy 两层 MLP 反向 7 行核心模板</h3>
+        <pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="129"><code class="language-python"># ① 输出层误差梯度：由 Softmax+CE 灵魂化简而来
+dZ2 = (P - Y) / B                       # (B, 10)
+
+# ② 输出层权重梯度：前向 A1 @ W2，消 B 维并累加全批次
+dW2 = A1.T @ dZ2                        # (128, 10)
+db2 = np.sum(dZ2, axis=0, keepdims=True)# (1, 10)
+
+# ③ 回传隐层激活：前向 Z2 = A1 @ W2，消 10 维
+dA1 = dZ2 @ self.W2.T                   # (B, 128)
+
+# ④ ReLU 门控反传：Z1 > 0 处通流，其余截断
+dZ1 = dA1 * (Z1 > 0)                    # (B, 128)
+
+# ⑤ 隐层权重与偏置梯度：消 B 维
+dW1 = X.T @ dZ1                         # (784, 128)
+db1 = np.sum(dZ1, axis=0, keepdims=True)# (1, 128)</code></pre>
+      </section>
+
+      <!-- 卡片 4: PyTorch GPU 工业级范式 -->
+      <section>
+        <h3>4. PyTorch GPU 工业级五步训练闭环</h3>
+        <pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="221"><code class="language-python"># 1. 结构与参数对齐：nn.Linear 内部存储转置 (out, in)
+model = nn.Sequential(nn.Linear(784, 128), nn.ReLU(), nn.Linear(128, 10)).to(device)
+criterion = nn.CrossEntropyLoss()       # 内置 Log-Sum-Exp 融合计算
+optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+
+# 2. 标准训练五步闭环
+for x, y in train_loader:
+    x, y = x.to(device), y.to(device)
+    optimizer.zero_grad()               # ① 清理残留梯度（底层 +=）
+    with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
+        logits = model(x)              # ② 前向输出原始 logits（严禁加 Softmax）
+        loss = criterion(logits, y)    # ③ 融合损失计算
+    loss.backward()                    # ④ 逆拓扑序求导
+    optimizer.step()                   # ⑤ 优化器更新参数
+    loss_sum += loss.item() * len(y)   # ⑥ loss.item() 防显存泄漏</code></pre>
+      </section>
+
+      <!-- 卡片 5: 三大工程避坑红线 -->
+      <section>
+        <h3>5. 三大工程避坑红线</h3>
+        <ul>
+          <li><strong>红线一：严禁在输出层后接 <code>nn.Softmax()</code></strong>：<code>nn.CrossEntropyLoss</code> 内部融合了 <code>log_softmax</code>，重复 Softmax 会导致 10 分类 Loss 锁死在 $\ge \ln(e+9)-1 \approx \mathbf{1.4612}$，且两端导数饱和致梯度假死。</li>
+          <li><strong>红线二：权重转置差异</strong>：数学上 $Z = XW$，PyTorch <code>nn.Linear</code> 计算 $x A^\top + b$，其 <code>weight</code> 维度为 <code>(out_features, in_features)</code>。权重初始化注入必须用 <code>W.T</code>。</li>
+          <li><strong>红线三：记录日志必须取 <code>loss.item()</code></strong>：直接累加 <code>loss</code> 会把整个 Batch 的前向计算图挂在内存中，迅速触发 GPU OOM。</li>
+        </ul>
+      </section>
+
+      <!-- 卡片 6: 30 秒面试表达模板 -->
+      <section>
+        <h3>6. 30 秒面试表达模板</h3>
+        <p>「在手撕 MLP MNIST 实战中，我用 NumPy 和 PyTorch GPU 分别跑出了 97.73% 与 97.71% 的严格对齐准确率。矩阵反向传播的核心推导是利用张量形状对齐：输出层由 Softmax 交叉熵解析求导得到 $\mathrm{d}Z_2 = (P - Y)/B$，而权重梯度 $\mathrm{d}W_2 = A_1^\top \mathrm{d}Z_2$ 利用矩阵乘法天然完成了 Batch 内所有样本外积的并行累加。而在 PyTorch 工业级落地时，关键是最后一层必须输出裸 logits 让 <code>nn.CrossEntropyLoss</code> 在内部做 Log-Sum-Exp 融合计算，既防止浮点数在 $e^z$ 时发生上溢崩溃，又避免了概率 $p$ 下溢为 0 导致损失截断和梯度断流。」</p>
+      </section>
+    </div>
+
+    <footer class="lab-footer">lab-teach 速查表 · 打印友好（浏览器按 Ctrl+P 可直接导出单页 PDF）</footer>
+  </main>
+</div>
+<script src="../../.agents/skills/lab-teach/assets/lab.js"></script>
+</body>
+</html>

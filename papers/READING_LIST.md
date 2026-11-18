@@ -7,8 +7,8 @@
 ---
 
 ## 阶段一：神经网络与 Transformer 地基（W01–W04）
-- [ ] 🟢 **How to Read a Paper** (Keshav, 2007) — 三遍阅读法，第 1 周先读它
-- [ ] 🟢 **ResNet** (*Deep Residual Learning*, 2015) — 残差连接为何能防退化
+- [x] 🟢 **How to Read a Paper** (Keshav, 2007) — 三遍阅读法，第 1 周先读它
+- [x] 🟢 **ResNet** (*Deep Residual Learning*, 2015) — 残差连接为何能防退化
 - [ ] 🔴 **Attention Is All You Need** (Vaswani et al., 2017) — 精读第 3 节，$QK^T/\sqrt{d_k}$ 与多头
 - [ ] 🟢 **GPT-2** (*Language Models are Unsupervised Multitask Learners*, 2019) — Zero-shot 生成范式
 - [ ] 🟢 **GPT-3** (*Language Models are Few-Shot Learners*, 2020) — In-Context Learning 涌现

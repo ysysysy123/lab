@@ -16,6 +16,8 @@
   现代 Decoder-only LLM（RoPE + GQA + RMSNorm + SwiGLU）最小全流程实现与单卡高效微调标准栈。适用时机：W05–W10 拆解现代架构、SFT Loss Mask、QLoRA、DPO 与 GRPO。
 - **Anthropic — _Building Effective Agents_ & Model Context Protocol (MCP) 规范**
   工业界最克制的零臃肿 Agent 设计准则。适用时机：W05–W08 构建 `p2-scratch-agent` 的 ReAct 循环、上下文压缩与标准 MCP 工具服务。
+- **[Datawhale — Agentic-RL Lab](https://github.com/datawhalechina/agentic-rl-lab)**（2026-11-03 加入）
+  P3 Agentic RL 主教材与实验参考，在 P1 小模型训练和 P2 基础 Agent／评估完成后使用。学习顺序：Loss Functions → GRPO → Search-R1（检索）或 ReTool（代码执行）二选一；DAPO／GSPO 后续选读，其余专题按需展开。当前示例要求 Python ≥3.13，主要通过 PyTRIO 远程训练，实验前确认账号、额度与费用；使用独立环境。本机／A800 的 TRL 或 Unsloth 实现另行选配。任务与进度统一记录在 [ROADMAP_16W.md](../ROADMAP_16W.md)，细节见 [P3 项目计划](../projects/p3-agentic-rl/README.md)。
 - **HuggingFace _Robot Learning: A Tutorial_ & `LeRobot` 源码**
   涵盖刚体空间变换、ACT、Diffusion Policy 与 SmolVLA/OpenVLA/$\pi_0$ 的统一开源具身栈。适用时机：W11–W16 具身控制与模仿学习/VLA 实验。
 
@@ -28,4 +30,5 @@
 
 ## Gaps（待后续按需补齐）
 
-- W10 Agentic RL（Search-R1 多跳检索奖励塑形）与 W13 $\pi_0$ 流匹配微调的本地轻量化冒烟脚本，待推进到对应周次时结合最新开源实现补充。
+- P3 Agentic RL 已接入主教材；独立 GRPO 评估与本机／A800 训练适配，待进入该专项时按所选路线补充。
+- W13 $\pi_0$ 流匹配微调的本地轻量化冒烟脚本，待推进到具身专项时补充。

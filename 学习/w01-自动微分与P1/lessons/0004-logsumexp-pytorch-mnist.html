@@ -41,6 +41,38 @@
       <span class="gap">△ IEEE 754 浮点数指数表示上限（FP64 / FP32 / BF16 / FP16，本课 §1 直接建表讲清）</span>
     </div>
 
+<section id="mnist-practice">
+<h2>先做实战：一次只看一步</h2>
+<p>2026-11-05 已实跑。固定种子 42、SGD 学习率 0.1、batch size 128、训练 10 轮。先看第一个标签，理解后再切换下一步。</p>
+<div class="lab-tabs">
+<div class="tab" data-label="1 · NumPy 学起来">
+<p><strong>本步只关注：反复更新权重后，训练损失下降。</strong></p>
+<p>每批 128 张图调用一次 <code>train_step</code>：预测 → 算损失 → 七行反向传播 → 更新权重。一轮表示把 60,000 张训练图片完整看一遍。</p>
+<p>NumPy MLP 的平均训练损失：第 1 轮 <strong>0.29058</strong> → 第 10 轮 <strong>0.03044</strong>。</p>
+<figure><img src="../../../projects/p1-tiny-llm/results/mnist-2026-11-05/training.png" alt="四组实验的训练损失曲线" style="max-width:100%"><figcaption>蓝线是 MLP；NumPy 与 PyTorch 曲线接近重合。</figcaption></figure>
+<p>快速重跑命令（在 lab/ 目录）：</p>
+<pre><code class="language-bash">OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 ~/Apps/miniconda3/envs/test/bin/python projects/p1-tiny-llm/src/w01_mlp_mnist.py --mode numpy --model mlp --debug</code></pre>
+<p>快速试跑只训练 640 张、测试 256 张，检查流程并保存模型；完整训练去掉 <code>--debug</code> 并加 <code>--epochs 10</code>。</p>
+</div>
+<div class="tab" data-label="2 · PyTorch 替我们求导">
+<p><strong>本步只关注：<code>loss.backward()</code> 对应手写反向传播；<code>optimizer.step()</code> 对应参数更新。</strong></p>
+<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="255" data-href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code class="language-python">            optimizer.zero_grad()
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
+                logits = model(x)              # 原始分数，末尾不加 Softmax
+                loss = criterion(logits, y)
+            loss.backward()                    # 对应 NumPy 手写的反向传播
+            optimizer.step()                   # 对应 W -= lr * dW</code></pre>
+<p><code>zero_grad()</code> 清空上一批的梯度；<code>model(x)</code> 预测；<code>criterion</code> 算损失；<code>backward()</code> 求梯度；<code>step()</code> 更新参数。</p>
+<p>当前两种实现都使用 SGD。NumPy 为 float64；PyTorch 在 GPU 上使用 BF16 混合精度训练，参数与最终评估为 FP32。</p>
+</div>
+<div class="tab" data-label="3 · 独立测试集验收">
+<p><strong>本步只关注：10,000 张未参与训练的图片，识别正确多少张？</strong></p>
+<table class="shape"><tr><th>后端</th><th>模型</th><th>测试正确数</th><th>准确率</th></tr><tr><td>NumPy</td><td>逻辑回归</td><td>9,226 / 10,000</td><td>92.26%</td></tr><tr><td>PyTorch</td><td>逻辑回归</td><td>9,228 / 10,000</td><td>92.28%</td></tr><tr><td>NumPy</td><td>MLP</td><td>9,773 / 10,000</td><td>97.73%</td></tr><tr><td>PyTorch</td><td>MLP</td><td>9,771 / 10,000</td><td>97.71%</td></tr></table>
+<p>两个 MLP 均达到 97% 目标。逻辑回归是线性基线。</p>
+<figure><img src="../../../projects/p1-tiny-llm/results/mnist-2026-11-05/predictions.png" alt="前12张测试图片的训练前后预测" style="max-width:100%"><figcaption>固定前 12 张测试图片：第 9 张真实为 5，预测仍为 6，该错误已计入准确率。</figcaption></figure>
+<p><a href="../../../projects/p1-tiny-llm/results/mnist-2026-11-05/README.md">逐步操作说明与完整实验记录</a> · <a href="../../../projects/p1-tiny-llm/results/mnist-2026-11-05/metrics.json">原始指标</a></p>
+</div></div></section>
+
     <!-- ========== §1 痛点与直觉 ========== -->
     <section>
       <h2><span class="num">01</span>痛点与直觉：计算机浮点数里的「双向上下溢灾难」</h2>
@@ -53,7 +85,7 @@
 
       <ul>
         <li><strong>灾难一：上溢（Overflow → <code>inf / inf = NaN</code>）</strong>：当网络初始化略偏大或学习率稍高时，logit $z$ 很容易冲上几十甚至几百。一旦超出浮点数的最大可表示对数阈值，$e^z$ 直接变成 <code>+inf</code>，紧接着分子除以分母算出 <code>inf / inf = NaN</code>，一轮迭代整网权重全废！</li>
-        <li><strong>灾难二：下溢（Underflow → <code>inf</code> 或梯度断流）</strong>：很多同学以为「算 <code>softmax</code> 前先减最大值 $z_{\max}$ 再算 <code>-np.log(p[y] + 1e-12)</code> 就安全了」（正如过渡代码 <code>w01_mlp_mnist.py</code> 第 58、83 行所写）。<strong>错！那只防住了上溢，没防住下溢！</strong>当目标类严重猜错、例如 $z = [0, -2, -1000],\ y=2$ 时，$e^{-1000}$ 在 FP64 中会直接下溢为精确的 <code>0.0</code>！不加 $\epsilon$ 会爆 <code>-log(0.0) = inf</code>；就算硬加 <code>1e-12</code> 护栏，损失也会被强行截断在 $-\ln(10^{-12}) \approx \mathbf{27.6310}$，与真实损失 $\mathbf{1000.1269}$ 相差十万八千里，对 $\log(p_y+\epsilon)$ 自动求导更会因为 $p_y=0$ 直接断掉梯度！</li>
+        <li><strong>灾难二：下溢（Underflow → <code>inf</code> 或梯度断流）</strong>：很多同学以为「算 <code>softmax</code> 前先减最大值 $z_{\max}$ 再算 <code>-np.log(p[y] + 1e-12)</code> 就安全了」（这是先前的教学过渡写法，当前源码已改为 Log-Sum-Exp）。<strong>错！那只防住了上溢，没防住下溢！</strong>当目标类严重猜错、例如 $z = [0, -2, -1000],\ y=2$ 时，$e^{-1000}$ 在 FP64 中会直接下溢为精确的 <code>0.0</code>！不加 $\epsilon$ 会爆 <code>-log(0.0) = inf</code>；就算硬加 <code>1e-12</code> 护栏，损失也会被强行截断在 $-\ln(10^{-12}) \approx \mathbf{27.6310}$，与真实损失 $\mathbf{1000.1269}$ 相差十万八千里，对 $\log(p_y+\epsilon)$ 自动求导更会因为 $p_y=0$ 直接断掉梯度！</li>
       </ul>
 
       <table class="shape">
@@ -120,38 +152,13 @@
 
       <p>对比一下本仓教学过渡代码与大模型课程工业级手搓代码的写法演进：</p>
       <div class="lab-tabs">
-        <div class="tab" data-label="⚠️ 过渡写法：先 Softmax 再 log(P + 1e-12)">
-<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="55" data-href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code class="language-python">    @staticmethod
-    def softmax(z: np.ndarray) -&gt; np.ndarray:
-        # 防数值溢出减去 max
-        shift_z = z - np.max(z, axis=1, keepdims=True)
-        exp_z = np.exp(shift_z)
-        return exp_z / np.sum(exp_z, axis=1, keepdims=True)
-
-    def forward(self, X: np.ndarray) -&gt; tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """
-        前向传播:
-        X: (B, 784)
-        返回: (Z1, A1, Z2, P)
-        """
-        Z1 = X @ self.W1 + self.b1           # (B, hidden_dim)
-        A1 = np.maximum(0, Z1)                # ReLU: (B, hidden_dim)
-        Z2 = A1 @ self.W2 + self.b2          # (B, out_dim)
-        P = self.softmax(Z2)                 # Softmax 概率分布: (B, out_dim)
-        return Z1, A1, Z2, P
-
-    def train_step(self, X: np.ndarray, y: np.ndarray) -&gt; float:
-        """
-        X: (B, 784)
-        y: (B,) 类别索引 0~9
-        """
-        B = X.shape[0]
-        Z1, A1, Z2, P = self.forward(X)
-
-        # 1. 计算交叉熵损失
-        log_likelihood = -np.log(P[np.arange(B), y] + 1e-12)
-        loss = float(np.mean(log_likelihood))</code></pre>
-          <p class="small muted">点评：在 MNIST 温和数值下够用（而且第 102 行手写反向直接用了化简后的 <code>(P - Y) / B</code> 避开了对 <code>log</code> 求导），但如果交给自动微分框架，<code>P[y]</code> 下溢变 <code>0</code> 时第 83 行会立刻卡在 $27.63$ 假死。</p>
+        <div class="tab" data-label="当前项目：直接在 Logits 上计算交叉熵">
+<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="75" data-href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code class="language-python">def cross_entropy(logits, y):
+    """直接在 logits 上算交叉熵，与 (P-Y)/B 的梯度对应。"""
+    shifted = logits - logits.max(axis=1, keepdims=True)
+    return float(np.mean(np.log(np.exp(shifted).sum(axis=1))
+                         - shifted[np.arange(len(y)), y]))</code></pre>
+          <p class="small muted">当前 NumPy 实现已直接采用平移后的 Log-Sum-Exp；前向损失与反向 <code>(P-Y)/B</code> 对应同一个平均交叉熵目标。</p>
         </div>
         <div class="tab" data-label="✅ 工业级写法：融合 log_softmax_stable">
 <pre data-file="../04-LLM大模型/教学/07-输出层与损失函数.ipynb · Cell#7" data-start="1"><code class="language-python"># ============ 1. 手搓：log-softmax / 平滑 CE 前向 / 反向 ============
@@ -171,60 +178,96 @@ def log_softmax_stable(logits):
     <!-- ========== §3 PyTorch 工业级代码拆解 ========== -->
     <section>
       <h2><span class="num">03</span>代码讲解：从手写 NumPy 到 PyTorch GPU 五步闭环</h2>
-      <p>理解了底层数学与数值稳定机制后，再看本仓 <code>projects/p1-tiny-llm/src/w01_mlp_mnist.py</code> 第 134–179 行的 <code>run_torch</code>，你会发现每一行 API 都与你手撕过的 NumPy 模块严丝合缝。点击右侧卡片逐段对照：</p>
+      <p>理解了底层数学与数值稳定机制后，再看本仓 <code>projects/p1-tiny-llm/src/w01_mlp_mnist.py</code> 第 217–297 行的 <code>run_torch</code>，你会发现每一行 API 都与你手撕过的 NumPy 模块严丝合缝。点击右侧卡片逐段对照：</p>
 
       <div class="code-walk" data-dim>
-<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="134" data-href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code class="language-python">def run_torch(train_loader, test_loader, epochs: int = 5):
+<pre data-file="projects/p1-tiny-llm/src/w01_mlp_mnist.py" data-start="217" data-href="../../../projects/p1-tiny-llm/src/w01_mlp_mnist.py"><code class="language-python">def run_torch(train_loader, test_loader, model_name="mlp", epochs=10, lr=0.1,
+              output_dir=Path("runs")):
     import torch
     import torch.nn as nn
-    import torch.optim as optim
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"🚀 PyTorch 训练设备: {device} ({torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU'})")
-
-    model = nn.Sequential(
-        nn.Flatten(),
-        nn.Linear(784, 128),
-        nn.ReLU(),
-        nn.Linear(128, 10)
-    ).to(device)
-
+    use_bf16 = device.type == "cuda" and torch.cuda.is_bf16_supported()
+    model = (nn.Sequential(nn.Linear(784, 128), nn.ReLU(), nn.Linear(128, 10))
+             if model_name == "mlp" else nn.Sequential(nn.Linear(784, 10)))
+    # 使用与 NumPy 相同的初始参数；nn.Linear 的权重存储方向相反。
+    reference = NumpyMLP(lr=lr) if model_name == "mlp" else NumpyLogisticRegression(lr=lr)
+    with torch.no_grad():
+        if model_name == "mlp":
+            for layer, w, b in ((model[0], reference.W1, reference.b1),
+                                (model[2], reference.W2, reference.b2)):
+                layer.weight.copy_(torch.from_numpy(w.T))
+                layer.bias.copy_(torch.from_numpy(b.ravel()))
+        else:
+            model[0].weight.copy_(torch.from_numpy(reference.W.T))
+            model[0].bias.copy_(torch.from_numpy(reference.b.ravel()))
+    model = model.to(device)
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=1e-3)
-
+    optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats()
+    print(f"\n[PyTorch/{model_name}] {device}，autograd，SGD lr={lr}，BF16={use_bf16}", flush=True)
+    x, y = next(iter(test_loader))
+    model.eval()
+    with torch.no_grad():
+        before = model(x[:12].to(device)).argmax(dim=1).cpu().tolist()
+    history, training_seconds, seen = [], 0.0, 0
     for epoch in range(1, epochs + 1):
         model.train()
-        total_loss = 0.0
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        start = time.perf_counter()
+        loss_sum, count = 0.0, 0
         for x, y in train_loader:
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
-            out = model(x)
-            loss = criterion(out, y)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-
-        # 评测
-        model.eval()
-        correct, total = 0, 0
-        with torch.no_grad():
-            for x, y in test_loader:
-                x, y = x.to(device), y.to(device)
-                preds = model(x).argmax(dim=1)
-                correct += (preds == y).sum().item()
-                total += y.size(0)
-
-        acc = correct / total
-        print(f"Epoch {epoch:02d} | Avg Loss: {total_loss / len(train_loader):.4f} | Test Acc: {acc * 100:.2f}%")
-
-    assert acc &gt;= 0.97, f"未达到 97% 准确率目标: {acc*100:.2f}%"
-    print(f"🎉 PyTorch 模型达标！最终测试集准确率: {acc * 100:.2f}%")</code></pre>
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
+                logits = model(x)              # 原始分数，末尾不加 Softmax
+                loss = criterion(logits, y)
+            loss.backward()                    # 对应 NumPy 手写的反向传播
+            optimizer.step()                   # 对应 W -= lr * dW
+            loss_sum += loss.item() * len(y)
+            count += len(y)
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+        seconds = time.perf_counter() - start
+        training_seconds += seconds
+        seen += count
+        history.append(dict(epoch=epoch, train_loss=loss_sum / count, seconds=seconds))
+        print(f"Epoch {epoch:02d} | train loss {loss_sum / count:.5f} | {seconds:.2f}s", flush=True)
+    model.eval()
+    correct, total, loss_sum = 0, 0, 0.0
+    predictions, labels = [], []
+    with torch.no_grad():
+        for x, y in test_loader:
+            x, y = x.to(device), y.to(device)
+            logits = model(x)
+            pred = logits.argmax(dim=1)
+            correct += (pred == y).sum().item()
+            total += len(y)
+            loss_sum += criterion(logits, y).item() * len(y)
+            predictions.extend(pred.cpu().tolist())
+            labels.extend(y.cpu().tolist())
+    checkpoint = output_dir / f"torch_{model_name}.pt"
+    torch.save(model.state_dict(), checkpoint)
+    model.load_state_dict(torch.load(checkpoint, map_location=device, weights_only=True))
+    x, _ = next(iter(test_loader))
+    with torch.no_grad():
+        assert model(x[:12].to(device)).argmax(dim=1).cpu().tolist() == predictions[:12]
+    return dict(backend="PyTorch", model=model_name, device=str(device),
+                precision="BF16 autocast; FP32 parameters/evaluation" if use_bf16 else "float32",
+                epochs=epochs, learning_rate=lr, history=history,
+                training_seconds=training_seconds, samples_per_second=seen / training_seconds,
+                peak_gpu_memory_mib=(torch.cuda.max_memory_allocated() / 1024**2
+                                     if device.type == "cuda" else 0),
+                test_accuracy=correct / total, test_loss=loss_sum / total,
+                correct=correct, test_samples=total, predictions=predictions[:12],
+                labels=labels[:12], before_predictions=before, checkpoint=str(checkpoint))</code></pre>
         <ol class="walk">
-          <li data-lines="139-140"><strong>算力自适应搬运</strong>：自动探测 CUDA GPU（本机识别为 <code>RTX 4080 Laptop GPU</code>）；注意模型权重与每个 Batch 的输入张量 <code>x, y</code> 必须在同一设备上，否则会报经典的 <code>Expected all tensors to be on the same device</code>。</li>
-          <li data-lines="142-147"><strong>⚠️ 头号面试红线：最后一层绝不能加 <code>nn.Softmax()</code>！</strong><code>nn.Linear(128, 10)</code> 直接输出未归一化的裸 logits。如果画蛇添足在末尾接上 <code>Softmax</code>，不仅破坏了 Log-Sum-Exp 对数抵消，还会把输入压进 $[0, 1]$，导致 10 分类损失永远降不到 $\ln(e+9)-1 \approx \mathbf{1.4612}$ 以下，且多乘一层饱和导数使收敛慢如蜗牛！</li>
-          <li data-lines="149-150"><strong>融合损失 + AdamW 优化器</strong>：<code>nn.CrossEntropyLoss()</code> 内部一步打包执行「<code>F.log_softmax</code>（含减 max 防溢出）+ 负对数似然选取 + Batch 取均值」；<code>AdamW</code> 用一阶动量与二阶自适应步长替代手写固定步长 SGD，5 个 Epoch 即可轻松突破 $97.5\%$。</li>
-          <li data-lines="156-162"><strong>训练循环五步标准咒语</strong>：① <code>zero_grad()</code> 清空上一步残留梯度（呼应第 1 课铁律二：底层默认 <code>+=</code> 累加！）→ ② <code>model(x)</code> 前向建图 → ③ <code>criterion(out, y)</code> 算标量损失 → ④ <code>loss.backward()</code> 逆拓扑序反传 → ⑤ <code>optimizer.step()</code> 更新参数。第 162 行务必用 <code>loss.item()</code> 取出纯 Python 浮点数，防止把整轮计算图挂在内存里撑爆显存！</li>
-          <li data-lines="165-173"><strong>评测双保险 <code>eval()</code> + <code>no_grad()</code></strong>：<code>model.eval()</code> 负责切换 Dropout 与 BatchNorm 的推理行为（养成工业级肌肉记忆）；<code>with torch.no_grad():</code> 彻底关闭动态图构建与前向激活缓存，省显存又提速。预测类别直接算 <code>model(x).argmax(dim=1)</code>，因为指数函数单调递增，最大 logit 必然对应最大概率，无需浪费算力求 Softmax！</li>
+          <li data-lines="221-222"><strong>算力自适应搬运</strong>：自动探测 CUDA GPU（本机识别为 <code>RTX 4080 Laptop GPU</code>）；注意模型权重与每个 Batch 的输入张量 <code>x, y</code> 必须在同一设备上，否则会报经典的 <code>Expected all tensors to be on the same device</code>。</li>
+          <li data-lines="223-224"><strong>⚠️ 头号面试红线：最后一层绝不能加 <code>nn.Softmax()</code>！</strong><code>nn.Linear(128, 10)</code> 直接输出未归一化的裸 logits。如果画蛇添足在末尾接上 <code>Softmax</code>，不仅破坏了 Log-Sum-Exp 对数抵消，还会把输入压进 $[0, 1]$，导致 10 分类损失永远降不到 $\ln(e+9)-1 \approx \mathbf{1.4612}$ 以下，且多乘一层饱和导数使收敛慢如蜗牛！</li>
+          <li data-lines="237-238"><strong>融合损失与 SGD 优化器</strong>：<code>nn.CrossEntropyLoss()</code> 接收 logits 并计算平均交叉熵；本次两种后端统一使用学习率 0.1 的 SGD，训练 10 轮。</li>
+          <li data-lines="255-261"><strong>训练循环五步标准咒语</strong>：① <code>zero_grad()</code> 清空上一步残留梯度（呼应第 1 课铁律二：底层默认 <code>+=</code> 累加！）→ ② <code>model(x)</code> 前向建图 → ③ <code>criterion(out, y)</code> 算标量损失 → ④ <code>loss.backward()</code> 逆拓扑序反传 → ⑤ <code>optimizer.step()</code> 更新参数。记录损失时用 <code>loss.item()</code> 取出纯 Python 浮点数，防止把整轮计算图挂在内存里撑爆显存！</li>
+          <li data-lines="270-282"><strong>评测双保险 <code>eval()</code> + <code>no_grad()</code></strong>：<code>model.eval()</code> 负责切换 Dropout 与 BatchNorm 的推理行为（养成工业级肌肉记忆）；<code>with torch.no_grad():</code> 彻底关闭动态图构建与前向激活缓存，省显存又提速。预测类别直接算 <code>model(x).argmax(dim=1)</code>，因为指数函数单调递增，最大 logit 必然对应最大概率，无需浪费算力求 Softmax！</li>
         </ol>
       </div>
 
@@ -325,8 +368,8 @@ def log_softmax_stable(logits):
       <h2><span class="num">07</span>延伸阅读与 P1 MNIST 达标指南</h2>
       <div class="callout source">
         <span class="ct">动手跑通本课双基准（约 2 分钟）</span>
-        <p>1. 在本机 RTX 4080 终端用 Conda 环境一键对比你的手写 NumPy MLP（$\ge 95\%$）与 PyTorch GPU 工业级模型（$\ge 97\%$）：<br>
-        <code>cd projects/p1-tiny-llm &amp;&amp; ~/Apps/miniconda3/envs/ai-lab/bin/python src/w01_mlp_mnist.py --mode both --epochs 5</code><br>
+        <p>1. 在本机 RTX 4080 终端用 Conda 环境一键对比你的NumPy 与 PyTorch 的 MLP（验收目标均为 $\ge 97\%$）：<br>
+        <code>cd projects/p1-tiny-llm &amp;&amp; OPENBLAS_NUM_THREADS=2 OMP_NUM_THREADS=2 ~/Apps/miniconda3/envs/test/bin/python src/w01_mlp_mnist.py --mode both --model both --epochs 10</code><br>
         2. 上层课程对照：<code>../04-LLM大模型/教学/07-输出层与损失函数.ipynb</code>（Cell#4–9，顺手看一眼权重共享 Weight Tying 与标签平滑 Label Smoothing 如何无缝复用同一套 <code>log_softmax_stable</code>）。</p>
       </div>
     </section>

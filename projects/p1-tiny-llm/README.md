@@ -5,6 +5,20 @@
 
 ---
 
+
+## W01 · MNIST 基础实验（2026-11-05 已实跑）
+
+完成 NumPy 手写梯度与 PyTorch 自动微分的逻辑回归 / MLP 对照。统一使用 SGD（学习率 0.1）、batch size 128、10 轮、种子 42；训练 / 测试分别为 MNIST 的 60,000 / 10,000 张图片。
+
+| 模型 | NumPy 测试准确率 | PyTorch 测试准确率 | 验收 |
+|---|---|---|---|
+| Softmax 回归：784→10 | 92.26% | 92.28% | 线性基线 |
+| MLP：784→128→10，ReLU | 97.73% | 97.71% | 两者均 ≥97% |
+
+NumPy MLP 第 1 / 10 轮平均训练损失为 0.29058 / 0.03044；PyTorch 为 0.29105 / 0.03051。NumPy 使用 CPU float64，PyTorch 使用 RTX 4080 Laptop GPU BF16 混合精度训练、FP32 参数与评估。
+
+[逐步实战说明、曲线与详细指标](results/mnist-2026-11-05/README.md) · [原始指标](results/mnist-2026-11-05/metrics.json) · [训练代码](src/w01_mlp_mnist.py)
+
 ## 阶段拆解与交付物清单
 
 ### Stage A（W01–W04）：纯手搓 BPE + nanoGPT

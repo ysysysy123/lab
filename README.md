@@ -5,6 +5,8 @@
 
 ---
 
+> **2026-11-03 学习路线更新**：已加入 [Agentic-RL Lab](https://github.com/datawhalechina/agentic-rl-lab)，作为完成 P1 小模型训练、P2 基础 RAG／Agent 后的 P3 专项教材，按 Loss Functions → GRPO → Search-R1／ReTool 二选一推进。下文原有周次作为任务导航，RL 与具身阶段按掌握情况顺延；执行顺序以 [最新看板](ROADMAP_16W.md) 为准。
+
 ## 一、 为什么以前觉得「读起来很累、学不下去」？这套工作流怎么改？
 
 原本直接啃上层仓库 23 个目录之所以痛苦，是因为**只有密集静态文字输入、没有即时运行反馈、每天坐下不知道先干嘛**。本地工作流改成以下 **4 条铁律**：
@@ -34,7 +36,8 @@
 ```text
 lab/                                  # 独立 Git 仓库（你的个人作品集）
 ├── README.md                         # 本手册：学习方式 + 目录导航 + 常用命令
-├── ROADMAP_16W.md                    # 16 周任务看板（支持 study.py 自动统计进度）
+├── PLAN.md                           # 【唯一入口】10 周到简历 v1 每日单主块计划（支持 study.py / workbench.py）
+├── archive/ROADMAP_16W.md            # 原 16 周完整路线归档
 ├── REFERENCE_INDEX.md                # 上层仓库「字典映射表」与断舍离清单
 ├── study.py                          # 零依赖 CLI 学习助手（打卡/查字典/建笔记/网页AI同步简报）
 ├── AGENTS.md                         # AI 全局助教宪法（防代写 · 分目录切换教练/架构师/面试官模式）
@@ -108,8 +111,8 @@ bash env/setup_local_conda.sh
 
 1. **看今天做什么**：默认安排当前第一节未完成课程；可从本周待办池加入项目、论文任务。
 2. **接着学习**：已有课程直接打开；尚未生成的课程可复制续学指令到 Codex。
-3. **保存并打卡**：学完勾选完成，写一句收获，点击「保存并打卡」。日志存入 `daily/YYYY-MM-DD.md`，勾选同步到课程 `计划.md` 或 `ROADMAP_16W.md`。
-4. **给明天留线索**：「下次从哪里继续」会显示在后续工作台；「打卡记录」可回看最近日志。
+3. **保存并打卡**：学完勾选完成，写一句收获，点击「保存并打卡」。日志存入 `daily/YYYY-MM-DD.md`，勾选同步到课程 `计划.md` 或 `PLAN.md`。
+4. **给明天留线索**：「下次从哪里继续」会显示在后续工作台与 `study.py status`；「打卡记录」可回看最近日志。
 
 「保存进度」可以先存草稿。原有 Markdown 内容保留；只安排任务或打开课程不会自动标记完成。工作台仅监听 `127.0.0.1:18761`，日期按 `America/Los_Angeles` 计算。
 
@@ -117,9 +120,10 @@ bash env/setup_local_conda.sh
 
 | 命令 | 作用 |
 |---|---|
-| `python3 study.py status` | 查看 16 周任务、30 篇论文、Hot100 与 5 大项目的整体完成度 |
-| `python3 study.py week 5` | 单独打印第 5 周的多线并行任务清单（不翻长文档） |
-| `python3 study.py today` | 在 `daily/` 下生成今日四段式打卡文件，并自动带出当前周待办 |
+| `python3 study.py status` | 查看 10 周主线（`PLAN.md`）、今日到期复习卡、上次留下的「今天第一件事」 |
+| `python3 study.py review` | 间隔复习 `学习/cards/*.md` 中的到期卡片（1→3→7→14→30→60 天，加 `--list` 仅预览） |
+| `python3 study.py week 0` | 单独打印指定周次（W00–W10）的每日推进单与三级验收卡 |
+| `python3 study.py today` | 在 `daily/` 下生成今日极简日志（自动带出 `PLAN.md` 当前唯一主块任务） |
 | `python3 study.py dict <关键词>` | 在上层 `autumn-recruitment` 仓库的核心章节中秒搜概念与公式位置 |
 | `python3 study.py paper attention --deep` | 用精读模板创建 `papers/` 笔记（加 `--skim` 则用 3 行略读卡） |
 | `python3 study.py lc 001_two_sum` | 在 `leetcode/` 下生成带 `assert` 自测框架的刷题脚本 |
